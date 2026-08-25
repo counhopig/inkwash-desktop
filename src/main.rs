@@ -73,7 +73,8 @@ impl CliAction {
 }
 
 fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
-    use transport::usb::{UsbEvent, UsbLink};
+    use std::sync::mpsc::RecvTimeoutError;
+    use transport::{usb::UsbLink, Event, Transport};
 
     let link = match UsbLink::connect(port) {
         Ok(link) => link,
@@ -94,11 +95,8 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds);
     let mut next_send = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        match link
-            .event_rx
-            .recv_timeout(std::time::Duration::from_millis(200))
-        {
-            Ok(UsbEvent::Reply(id, reply)) => {
+        match link.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(Event::Reply(id, reply)) => {
                 match protocol::classify_reply(&request_id, id.as_deref(), &reply) {
                     protocol::ReplyDecision::Stale => {
                         println!(
@@ -121,12 +119,12 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
                     }
                 }
             }
-            Ok(UsbEvent::Log(line)) => println!("(log) {line}"),
-            Ok(UsbEvent::Disconnected(reason)) => {
+            Ok(Event::Log(line)) => println!("(log) {line}"),
+            Ok(Event::Disconnected(reason)) => {
                 eprintln!("disconnected: {reason}");
                 std::process::exit(1);
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(RecvTimeoutError::Timeout) => {
                 if std::time::Instant::now() >= next_send {
                     if let Err(err) = link.send(&request_id, action.command()) {
                         eprintln!("retry send failed: {err}");
@@ -134,7 +132,7 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
                     next_send = std::time::Instant::now() + std::time::Duration::from_secs(2);
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(RecvTimeoutError::Disconnected) => {
                 eprintln!("worker thread gone");
                 std::process::exit(1);
             }

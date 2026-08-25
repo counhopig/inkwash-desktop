@@ -18,7 +18,6 @@
 //! See `state::AppState` for the design rationale and `protocol` for
 //! the wire format.
 
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,8 +27,8 @@ use tauri::{AppHandle, Emitter, State};
 use crate::desktop::SharedState;
 use crate::error::AppError;
 use crate::protocol::{self, Command, Reply};
-use crate::state::{AppState, BleHandle, LinkState, UsbHandle};
-use crate::transport::{ble::BleLink, usb::UsbLink};
+use crate::state::{ActiveLink, AppState, LinkKind, LinkState};
+use crate::transport::{ble::BleLink, usb::UsbLink, Event, Transport};
 
 const DEVICE_CMD_TIMEOUT: Duration = Duration::from_secs(45);
 // Opening the ESP32-S3 USB Serial/JTAG port resets the chip, so a command
@@ -107,27 +106,34 @@ fn result_from_reply(reply: Reply) -> DeviceCommandResult {
     }
 }
 
-enum Phase {
-    Usb,
-    Ble,
+/// Snapshot of the connection a request was started on: the transport
+/// itself (an owned `Arc`, so the wait loop can poll it without holding
+/// the `link` mutex) plus which radio it runs on. A stale phase (link
+/// swapped out from under us) is detected by pointer identity and simply
+/// means "not connected" for this request.
+struct Phase {
+    transport: Arc<dyn Transport>,
+    kind: LinkKind,
 }
 
-/// Resends `command` (under the same `request_id`) on whichever transport
-/// `phase` says is active. Used both for the USB boot-reset retry and for
-/// an automatic retry after a `busy` reply - a stale phase (link swapped
-/// out from under us) is simply a no-op, same as before this existed.
-fn resend(state: &AppState, phase: &Phase, request_id: &str, command: &Command) {
-    let Ok(mut guard) = state.link.lock() else {
-        return;
-    };
-    match (&mut *guard, phase) {
-        (LinkState::Usb(handle), Phase::Usb) => {
-            let _ = handle.send(request_id, command.clone());
+impl Phase {
+    /// True while `link` still holds this same transport.
+    fn matches(&self, state: &AppState) -> bool {
+        let Ok(guard) = state.link.lock() else {
+            return false;
+        };
+        match &*guard {
+            LinkState::Connected(link) => Arc::ptr_eq(&link.transport(), &self.transport),
+            LinkState::Disconnected => false,
         }
-        (LinkState::Ble(handle), Phase::Ble) => {
-            let _ = handle.send(request_id, command.clone());
+    }
+
+    /// Queues a resend on exactly this transport, but only while it is
+    /// still the active link; a stale phase is a no-op.
+    fn resend_on(&self, state: &AppState, request_id: &str, command: &Command) {
+        if self.matches(state) {
+            let _ = self.transport.send(request_id, command.clone());
         }
-        _ => {}
     }
 }
 
@@ -162,7 +168,7 @@ fn handle_reply(
         ),
     );
     if decision == protocol::ReplyDecision::Busy {
-        resend(state, phase, request_id, command);
+        phase.resend_on(state, request_id, command);
         return None;
     }
     Some(result_from_reply(reply))
@@ -176,7 +182,7 @@ fn send_and_wait(state: &AppState, command: Command) -> Result<DeviceCommandResu
     let deadline = Instant::now() + DEVICE_CMD_TIMEOUT;
     let mut next_resend = Instant::now() + RETRY_INTERVAL;
 
-    // Log first - the command is also sent via `handle.send` below and
+    // Log first - the command is also sent via the transport below and
     // may be resent while the device boots, so log before the first send.
     state.logs.info(
         "device",
@@ -187,19 +193,21 @@ fn send_and_wait(state: &AppState, command: Command) -> Result<DeviceCommandResu
     );
 
     let phase = {
-        let mut guard = state
+        let guard = state
             .link
             .lock()
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-        match &mut *guard {
+        match &*guard {
             LinkState::Disconnected => return Err(AppError::device_not_connected()),
-            LinkState::Usb(handle) => {
-                handle.send(&request_id, command.clone())?;
-                Phase::Usb
-            }
-            LinkState::Ble(handle) => {
-                handle.send(&request_id, command.clone())?;
-                Phase::Ble
+            LinkState::Connected(link) => {
+                let transport = link.transport();
+                transport
+                    .send(&request_id, command.clone())
+                    .map_err(|e| AppError::internal(e.to_string()))?;
+                Phase {
+                    transport,
+                    kind: link.kind(),
+                }
             }
         }
     };
@@ -209,30 +217,25 @@ fn send_and_wait(state: &AppState, command: Command) -> Result<DeviceCommandResu
             return Err(AppError::device_timeout());
         }
         let tick = {
-            let mut guard = state
+            let guard = state
                 .link
                 .lock()
                 .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-            match &mut *guard {
+            match &*guard {
                 LinkState::Disconnected => return Err(AppError::device_not_connected()),
-                LinkState::Usb(handle) => match phase {
-                    Phase::Usb => Some(TickEvent::Usb(
-                        handle.recv_timeout(Duration::from_millis(250)),
-                    )),
-                    Phase::Ble => return Err(AppError::device_not_connected()),
-                },
-                LinkState::Ble(handle) => match phase {
-                    Phase::Ble => Some(TickEvent::Ble(
-                        handle.recv_timeout(Duration::from_millis(250)),
-                    )),
-                    Phase::Usb => return Err(AppError::device_not_connected()),
-                },
+                LinkState::Connected(link)
+                    if Arc::ptr_eq(&link.transport(), &phase.transport) =>
+                {
+                    // The snapshot Arc keeps receiving events after this
+                    // lock guard is dropped - see state.rs invariant 1.
+                    link.transport().recv_timeout(Duration::from_millis(250))
+                }
+                LinkState::Connected(_) => return Err(AppError::device_not_connected()),
             }
         };
 
-        let Some(tick) = tick else { continue };
         match tick {
-            TickEvent::Usb(Ok(crate::transport::usb::UsbEvent::Reply(id, reply))) => {
+            Ok(Event::Reply(id, reply)) => {
                 if let Some(result) =
                     handle_reply(state, &phase, &request_id, &command, id, reply)
                 {
@@ -240,37 +243,25 @@ fn send_and_wait(state: &AppState, command: Command) -> Result<DeviceCommandResu
                 }
                 next_resend = Instant::now() + RETRY_INTERVAL;
             }
-            TickEvent::Ble(Ok(crate::transport::ble::BleEvent::Reply(id, reply))) => {
-                if let Some(result) =
-                    handle_reply(state, &phase, &request_id, &command, id, reply)
-                {
-                    return Ok(result);
-                }
-                next_resend = Instant::now() + RETRY_INTERVAL;
-            }
-            TickEvent::Usb(Ok(crate::transport::usb::UsbEvent::Log(line)))
-            | TickEvent::Ble(Ok(crate::transport::ble::BleEvent::Log(line))) => {
+            Ok(Event::Log(line)) => {
                 state.logs.info("device-log", line);
             }
-            TickEvent::Usb(Ok(crate::transport::usb::UsbEvent::Disconnected(reason)))
-            | TickEvent::Ble(Ok(crate::transport::ble::BleEvent::Disconnected(reason))) => {
+            Ok(Event::Disconnected(reason)) => {
                 clear_link(state);
                 return Err(AppError::device_disconnected(reason));
             }
-            TickEvent::Usb(Err(_)) | TickEvent::Ble(Err(_)) => {
-                if matches!(phase, Phase::Usb) && Instant::now() >= next_resend {
-                    resend(state, &phase, &request_id, &command);
+            Err(_) => {
+                // Idle tick. Resend on USB only: opening that port resets
+                // the chip and early copies of a command can be lost
+                // while it boots. BLE connects only after GATT setup has
+                // completed, so its commands are never lost to a boot.
+                if phase.kind == LinkKind::Usb && Instant::now() >= next_resend {
+                    phase.resend_on(state, &request_id, &command);
                     next_resend = Instant::now() + RETRY_INTERVAL;
                 }
-                continue;
             }
         }
     }
-}
-
-enum TickEvent {
-    Usb(Result<crate::transport::usb::UsbEvent, mpsc::RecvTimeoutError>),
-    Ble(Result<crate::transport::ble::BleEvent, mpsc::RecvTimeoutError>),
 }
 
 fn clear_link(state: &AppState) {
@@ -302,7 +293,10 @@ pub async fn connect_usb(
             .link
             .lock()
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-        *g = LinkState::Usb(UsbHandle::new(link));
+        *g = LinkState::Connected(Box::new(ActiveLink::new(
+            LinkKind::Usb,
+            Arc::new(link),
+        )));
     }
     shared
         .logs
@@ -331,23 +325,38 @@ pub async fn connect_ble(state: State<'_, SharedState>) -> Result<(), AppError> 
             .link
             .lock()
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-        *g = LinkState::Ble(BleHandle::new(link));
+        *g = LinkState::Connected(Box::new(ActiveLink::new(
+            LinkKind::Ble,
+            Arc::new(link),
+        )));
     }
     shared.logs.info("device", "BLE connected · Inkwash");
     emit_connection_changed(&shared);
     Ok(())
 }
-
 #[tauri::command]
 pub async fn disconnect_device(state: State<'_, SharedState>) -> Result<(), AppError> {
     let shared = state.inner().clone();
-    {
+    let old = {
         let mut g = shared
             .link
             .lock()
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-        *g = LinkState::Disconnected;
+        std::mem::replace(&mut *g, LinkState::Disconnected)
+    };
+    // Ask the worker to shut down promptly instead of waiting for it to
+    // notice its receivers are gone, and flush anything it already
+    // delivered (device log noise, in particular) into the log store
+    // before the channel drops.
+    if let LinkState::Connected(link) = &old {
+        link.transport().disconnect();
+        while let Some(event) = link.transport().try_recv() {
+            if let Event::Log(line) = event {
+                shared.logs.info("device-log", line);
+            }
+        }
     }
+    drop(old);
     shared.logs.info("device", "Device disconnected");
     emit_connection_changed(&shared);
     Ok(())

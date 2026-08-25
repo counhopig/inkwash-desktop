@@ -1,22 +1,32 @@
 //! BLE transport, matching `inkwash/docs/control-protocol.md`'s BLE
-//! Framing section: commands are written to the write characteristic as
+//! framing section: commands are written to the write characteristic as
 //! plain JSON (no line framing needed - GATT writes are already
 //! message-delimited), replies arrive as notifications on the separate
 //! notify characteristic. Runs its own Tokio runtime on a dedicated
 //! thread, since `btleplug` is async-only and the Tauri runtime's
 //! tokio-blocking boundary cannot host it directly - same "worker
-//! thread + `std::sync::mpsc` channel" shape as `transport::usb`, just
+//! thread + `std::sync::mpsc` channel" shape as [`super::usb`], just
 //! with an async worker body instead of a blocking one.
+//!
+//! The worker thread runs the shared polling skeleton from
+//! `transport::run_worker_loop`; each tick's GATT read/write is driven
+//! through the dedicated runtime with `block_on` from the owning thread
+//! (legal there, since the loop itself is not inside an async context).
 
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType};
 use btleplug::platform::{Manager, Peripheral};
 use futures::StreamExt;
 use uuid::Uuid;
 
-use crate::protocol::{self, Command, Reply};
+use crate::protocol::Command;
+use crate::transport::{
+    run_worker_loop, Event, Inbound, PollSource, Transport, WriteOutcome, POLL_INTERVAL,
+};
 
 const SERVICE_UUID: &str = "d2c25e50-5e22-48d8-a8b3-34f2f8e2c7d4";
 const WRITE_CHAR_UUID: &str = "d2c25e51-5e22-48d8-a8b3-34f2f8e2c7d4";
@@ -24,17 +34,10 @@ const NOTIFY_CHAR_UUID: &str = "d2c25e52-5e22-48d8-a8b3-34f2f8e2c7d4";
 /// Advertised device name set in `ble_control.rs::BleControl::start`.
 const DEVICE_NAME: &str = "Inkwash";
 
-pub enum BleEvent {
-    /// `id` is the reply's correlation id (see `protocol::decode_reply`),
-    /// `None` if the device didn't echo one back.
-    Reply(Option<String>, Reply),
-    Log(String),
-    Disconnected(String),
-}
-
 pub struct BleLink {
-    pub(crate) cmd_tx: mpsc::Sender<(String, Command)>,
-    pub event_rx: mpsc::Receiver<BleEvent>,
+    cmd_tx: mpsc::Sender<(String, Command)>,
+    event_rx: Mutex<mpsc::Receiver<Event>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl BleLink {
@@ -52,7 +55,7 @@ impl BleLink {
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("no BLE adapter available"))?;
             adapter.start_scan(ScanFilter::default()).await?;
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
             let mut report = Vec::new();
             for peripheral in adapter.peripherals().await? {
                 match peripheral.properties().await {
@@ -94,9 +97,15 @@ impl BleLink {
     /// `update()`.
     pub fn connect() -> anyhow::Result<Self> {
         let (cmd_tx, cmd_rx) = mpsc::channel::<(String, Command)>();
-        let (event_tx, event_rx) = mpsc::channel::<BleEvent>();
+        let (event_tx, event_rx) = mpsc::channel::<Event>();
         let (ready_tx, ready_rx) = mpsc::channel::<anyhow::Result<()>>();
+        let stop = Arc::new(AtomicBool::new(false));
 
+        // Dedicated thread + dedicated runtime, exactly as before: setup
+        // runs inside one `block_on`, then the shared (synchronous)
+        // polling loop takes over and drives each GATT operation with its
+        // own short `block_on` call.
+        let worker_stop = Arc::clone(&stop);
         thread::spawn(move || {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
@@ -105,47 +114,77 @@ impl BleLink {
                     return;
                 }
             };
-            rt.block_on(async {
-                match connect_and_run(cmd_rx, event_tx.clone(), &ready_tx).await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        // If setup failed this wakes connect(); if setup had
-                        // already succeeded, the receiver is gone and the
-                        // disconnect event below is what the UI observes.
-                        let _ = ready_tx.send(Err(anyhow::anyhow!("{e}")));
-                        let _ = event_tx.send(BleEvent::Disconnected(e.to_string()));
-                    }
+            match rt.block_on(connect_and_setup(&event_tx, &ready_tx)) {
+                Ok(session) => {
+                    let mut adapter = BleAdapter {
+                        rt,
+                        peripheral: session.peripheral,
+                        write_char: session.write_char,
+                        notifications: Box::pin(session.notifications),
+                    };
+                    run_worker_loop(&mut adapter, cmd_rx, &event_tx, &worker_stop);
                 }
-            });
+                Err(e) => {
+                    // If setup failed this wakes connect(); if setup had
+                    // already succeeded, the receiver is gone and the
+                    // disconnect event below is what the UI observes.
+                    let _ = ready_tx.send(Err(anyhow::anyhow!("{e}")));
+                    let _ = event_tx.send(Event::Disconnected(e.to_string()));
+                }
+            }
         });
 
         // The worker signals readiness only after it has actually
-        // connected and subscribed (see `connect_and_run`'s first phase),
-        // so a caller blocking on this knows the link is live before it
-        // returns, not just that the thread started.
+        // connected and subscribed (see `connect_and_setup`), so a caller
+        // blocking on this knows the link is live before it returns, not
+        // just that the thread started.
         ready_rx
             .recv()
             .map_err(|_| anyhow::anyhow!("BLE worker thread exited before connecting"))??;
 
-        Ok(Self { cmd_tx, event_rx })
+        Ok(Self {
+            cmd_tx,
+            event_rx: Mutex::new(event_rx),
+            stop,
+        })
     }
+}
 
-    /// `id` is the request correlation id to attach - generate one with
-    /// `protocol::next_request_id()` and reuse it across resends of the
-    /// same logical request.
-    #[allow(dead_code)]
-    pub fn send(&self, id: &str, cmd: Command) -> anyhow::Result<()> {
+impl Transport for BleLink {
+    fn send(&self, id: &str, cmd: Command) -> anyhow::Result<()> {
         self.cmd_tx
             .send((id.to_string(), cmd))
             .map_err(|_| anyhow::anyhow!("BLE worker thread is gone"))
     }
+
+    fn recv_timeout(&self, timeout: Duration) -> Result<Event, mpsc::RecvTimeoutError> {
+        self.event_rx
+            .lock()
+            .expect("ble event_rx mutex poisoned")
+            .recv_timeout(timeout)
+    }
+
+    fn disconnect(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
-async fn connect_and_run(
-    cmd_rx: mpsc::Receiver<(String, Command)>,
-    event_tx: mpsc::Sender<BleEvent>,
+/// Everything the polling loop needs once GATT setup has completed.
+struct BleSession {
+    peripheral: Peripheral,
+    write_char: btleplug::api::Characteristic,
+    notifications: std::pin::Pin<
+        Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>,
+    >,
+}
+
+/// Scan, connect, subscribe, signal readiness. The pre-loop half of the
+/// old monolithic `connect_and_run`; from here the shared
+/// `run_worker_loop` owns both directions.
+async fn connect_and_setup(
+    event_tx: &mpsc::Sender<Event>,
     ready_tx: &mpsc::Sender<anyhow::Result<()>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BleSession> {
     let manager = Manager::new().await?;
     let adapters = manager.adapters().await?;
     let adapter = adapters
@@ -175,7 +214,7 @@ async fn connect_and_run(
         .clone();
 
     peripheral.subscribe(&notify_char).await?;
-    let mut notifications = peripheral.notifications().await?;
+    let notifications = peripheral.notifications().await?;
 
     // Report readiness as soon as GATT setup is complete. Previously this
     // was sent only after this long-running loop returned, so the Desktop
@@ -184,49 +223,54 @@ async fn connect_and_run(
         .send(Ok(()))
         .map_err(|_| anyhow::anyhow!("BLE connection requester went away"))?;
 
-    let _ = event_tx.send(BleEvent::Log(format!(
+    let _ = event_tx.send(Event::Log(format!(
         "connected to {DEVICE_NAME} (service {SERVICE_UUID})"
     )));
 
-    // From here on this task owns both directions: draining outgoing
-    // commands and forwarding incoming notifications. `cmd_rx` is a
-    // blocking `std::sync::mpsc::Receiver`, so it's polled via
-    // `try_recv()` inside the same `select!`-free loop rather than
-    // `.await`ed directly - a short sleep keeps this from busy-spinning
-    // between notification arrivals.
-    loop {
-        while let Ok((id, cmd)) = cmd_rx.try_recv() {
-            let payload = protocol::encode_command(&cmd, &id);
-            if let Err(e) = peripheral
-                .write(&write_char, payload.as_bytes(), WriteType::WithResponse)
-                .await
-            {
-                let _ = event_tx.send(BleEvent::Disconnected(format!("write failed: {e}")));
-                return Ok(());
-            }
-        }
+    Ok(BleSession {
+        peripheral,
+        write_char,
+        notifications,
+    })
+}
 
-        match tokio::time::timeout(std::time::Duration::from_millis(200), notifications.next())
-            .await
-        {
-            Ok(Some(data)) => {
-                let text = String::from_utf8_lossy(&data.value).to_string();
-                match protocol::decode_reply(&text) {
-                    Ok((id, reply)) => {
-                        if event_tx.send(BleEvent::Reply(id, reply)).is_err() {
-                            return Ok(());
-                        }
-                    }
-                    Err(err) => {
-                        let _ = event_tx.send(BleEvent::Log(format!("(unparseable reply: {err})")));
-                    }
-                }
-            }
-            Ok(None) => {
-                let _ = event_tx.send(BleEvent::Disconnected("notification stream ended".into()));
-                return Ok(());
-            }
-            Err(_timeout) => {} // no notification this tick, loop back to check cmd_rx
+/// BLE half of the worker: bare-JSON GATT writes and notification reads,
+/// each driven through the link's dedicated Tokio runtime from the
+/// synchronous polling loop.
+struct BleAdapter {
+    rt: tokio::runtime::Runtime,
+    peripheral: Peripheral,
+    write_char: btleplug::api::Characteristic,
+    notifications: std::pin::Pin<
+        Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>,
+    >,
+}
+
+impl PollSource for BleAdapter {
+    fn poll(&mut self) -> Result<Option<Inbound>, String> {
+        let Self {
+            rt,
+            notifications,
+            ..
+        } = self;
+        match rt.block_on(tokio::time::timeout(POLL_INTERVAL, notifications.next())) {
+            // A timeout with no notification is the normal idle tick.
+            Err(_elapsed) => Ok(None),
+            Ok(None) => Err("notification stream ended".to_string()),
+            Ok(Some(data)) => Ok(Some(Inbound::Reply(
+                String::from_utf8_lossy(&data.value).to_string(),
+            ))),
+        }
+    }
+
+    fn write_command(&mut self, payload: &str) -> WriteOutcome {
+        match self.rt.block_on(self.peripheral.write(
+            &self.write_char,
+            payload.as_bytes(),
+            WriteType::WithResponse,
+        )) {
+            Ok(()) => WriteOutcome::Sent,
+            Err(e) => WriteOutcome::Fatal(format!("write failed: {e}")),
         }
     }
 }
@@ -262,7 +306,7 @@ async fn find_device_with_retries(
                 }
             }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     Err(anyhow::anyhow!(
         "no BLE device named '{name}' found after scanning - make sure the device's BLE Pairing screen is open"

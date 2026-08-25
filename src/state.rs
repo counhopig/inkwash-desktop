@@ -2,25 +2,20 @@
 //!
 //! Two invariants to be aware of when reading this file:
 //!
-//! 1. `link` is *never* held across an `event_rx.recv_timeout()` - the
-//!    wait happens against the per-link receiver mutex instead, so a
-//!    slow USB sync does not block BLE scans, log reads, or any other
-//!    command that needs to look at the link state.
+//! 1. `link` is *never* held across an `recv_timeout()` - callers take a
+//!    cheap [`ActiveLink::transport`] snapshot (an `Arc` clone) under the
+//!    lock, release it, then wait on the snapshot - so a slow USB sync
+//!    does not block BLE scans, log reads, or any other command that
+//!    needs to look at the link state.
 //! 2. `logs.append()` always logs to stderr AND to the on-disk file AND
 //!    emits a `device-log` event - CLI mode picks up the stderr line,
 //!    the GUI picks up the event, the file is the permanent record.
 
-use std::sync::{mpsc, Mutex};
-use std::time::Duration;
-
+use std::sync::Mutex;
 use tauri::AppHandle;
 
 use crate::commands::logs::LogStore;
-use crate::protocol::Command;
-use crate::transport::{
-    ble::{BleEvent, BleLink},
-    usb::{UsbEvent, UsbLink},
-};
+use crate::transport::Transport;
 
 pub struct AppState {
     pub link: Mutex<LinkState>,
@@ -44,8 +39,7 @@ impl AppState {
 pub enum LinkState {
     #[default]
     Disconnected,
-    Usb(UsbHandle),
-    Ble(BleHandle),
+    Connected(Box<ActiveLink>),
 }
 
 impl LinkState {
@@ -56,82 +50,69 @@ impl LinkState {
     pub fn kind_label(&self) -> &'static str {
         match self {
             Self::Disconnected => "Offline",
-            Self::Usb(_) => "USB",
-            Self::Ble(_) => "BLE",
+            Self::Connected(link) => link.kind.label(),
         }
     }
 
     pub fn port_label(&self) -> String {
         match self {
             Self::Disconnected => "—".into(),
-            Self::Usb(_) => "USB serial".into(),
-            Self::Ble(_) => "Inkwash (BLE)".into(),
+            Self::Connected(link) => link.kind.port_label().into(),
         }
     }
 }
 
-/// Wraps a `UsbLink`'s command sender and receiver. The receiver lives
-/// behind its own `Mutex` so the long blocking `recv_timeout()` in a
-/// command does not serialise behind the application-wide `link` lock.
-pub struct UsbHandle {
-    cmd_tx: mpsc::Sender<(String, Command)>,
-    event_rx: Mutex<mpsc::Receiver<UsbEvent>>,
+/// Which transport a connection came up on. Kept as plain data next to
+/// the [`Transport`] trait object so UI labels never need downcasting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    Usb,
+    Ble,
 }
 
-impl UsbHandle {
-    pub fn new(link: UsbLink) -> Self {
-        let UsbLink { cmd_tx, event_rx } = link;
-        Self {
-            cmd_tx,
-            event_rx: Mutex::new(event_rx),
+impl LinkKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Usb => "USB",
+            Self::Ble => "BLE",
         }
     }
 
-    /// `id` is the request correlation id to attach - generate one with
-    /// `protocol::next_request_id()` and reuse it across resends of the
-    /// same logical request.
-    pub fn send(&self, id: &str, cmd: Command) -> Result<(), crate::error::AppError> {
-        self.cmd_tx
-            .send((id.to_string(), cmd))
-            .map_err(|_| crate::error::AppError::internal("USB worker thread is gone"))
-    }
-
-    pub fn recv_timeout(&self, dur: Duration) -> Result<UsbEvent, mpsc::RecvTimeoutError> {
-        self.event_rx
-            .lock()
-            .expect("usb event_rx mutex poisoned")
-            .recv_timeout(dur)
-    }
-}
-
-/// Same shape as `UsbHandle`, for the BLE transport.
-pub struct BleHandle {
-    cmd_tx: mpsc::Sender<(String, Command)>,
-    event_rx: Mutex<mpsc::Receiver<BleEvent>>,
-}
-
-impl BleHandle {
-    pub fn new(link: BleLink) -> Self {
-        let BleLink { cmd_tx, event_rx } = link;
-        Self {
-            cmd_tx,
-            event_rx: Mutex::new(event_rx),
+    fn port_label(self) -> &'static str {
+        match self {
+            Self::Usb => "USB serial",
+            Self::Ble => "Inkwash (BLE)",
         }
     }
+}
 
-    /// `id` is the request correlation id to attach - generate one with
-    /// `protocol::next_request_id()` and reuse it across resends of the
-    /// same logical request.
-    pub fn send(&self, id: &str, cmd: Command) -> Result<(), crate::error::AppError> {
-        self.cmd_tx
-            .send((id.to_string(), cmd))
-            .map_err(|_| crate::error::AppError::internal("BLE worker thread is gone"))
+/// One live connection: the [`Transport`] trait object plus which radio
+/// it runs on.
+///
+/// The transport lives behind an `Arc` rather than directly inside the
+/// box because of invariant 1 above: a caller sending a command needs a
+/// short borrow under the `link` mutex, but a caller *waiting* for a
+/// reply must not hold that mutex for up to 45s. Cloning the `Arc` under
+/// the lock gives every waiter its own handle to keep polling after the
+/// lock is released.
+pub struct ActiveLink {
+    kind: LinkKind,
+    transport: std::sync::Arc<dyn Transport>,
+}
+
+impl ActiveLink {
+    pub fn new(kind: LinkKind, transport: std::sync::Arc<dyn Transport>) -> Self {
+        Self { kind, transport }
     }
 
-    pub fn recv_timeout(&self, dur: Duration) -> Result<BleEvent, mpsc::RecvTimeoutError> {
-        self.event_rx
-            .lock()
-            .expect("ble event_rx mutex poisoned")
-            .recv_timeout(dur)
+    pub fn kind(&self) -> LinkKind {
+        self.kind
+    }
+
+    /// Snapshot of the live transport; see the type-level comment about
+    /// why this returns an owned clone instead of a borrow.
+    pub fn transport(&self) -> std::sync::Arc<dyn Transport> {
+        std::sync::Arc::clone(&self.transport)
     }
 }
+
