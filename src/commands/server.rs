@@ -1,6 +1,7 @@
-//! Tauri commands for talking to `inkwash-server`'s admin API. These
-//! all run on a worker thread (`spawn_blocking`) since `reqwest` here
-//! is in blocking mode (matches the existing `ServerClient`).
+//! Tauri commands for talking to `inkwash-server`'s admin API. They all
+//! delegate to `admin_call`, which runs the blocking `reqwest` requests
+//! on a worker thread (`spawn_blocking`) - `reqwest` here is in blocking
+//! mode (matches the existing `ServerClient`).
 //!
 //! The wire types come from `crate::server`. Error mapping goes
 //! through `crate::error::from_reqwest` so 401/403 becomes
@@ -71,12 +72,10 @@ pub async fn register_device(
     state
         .logs
         .info("server", format!("→ POST {base_url}/api/devices name={name}"));
-    tauri::async_runtime::spawn_blocking(move || -> Result<Device, AppError> {
-        let c = client(base_url, token)?;
-        c.register_device(&name).map_err(map_err)
+    admin_call("register_device", base_url, token, move |c| {
+        c.register_device(&name)
     })
     .await
-    .map_err(|e| AppError::internal(format!("register_device task: {e}")))?
 }
 
 #[tauri::command]
@@ -89,12 +88,10 @@ pub async fn delete_device(
     state
         .logs
         .info("server", format!("→ DELETE {base_url}/api/devices/{device_id}"));
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
-        c.delete_device(&device_id).map_err(map_err)
+    admin_call("delete_device", base_url, token, move |c| {
+        c.delete_device(&device_id)
     })
     .await
-    .map_err(|e| AppError::internal(format!("delete_device task: {e}")))?
 }
 
 // ---------- Alarms ----------
@@ -125,8 +122,7 @@ pub async fn create_alarm(
             input.hour, input.minute
         ),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
+    admin_call("create_alarm", base_url, token, move |c| {
         let req = UpsertAlarmRequest {
             hour: input.hour,
             minute: input.minute,
@@ -134,10 +130,9 @@ pub async fn create_alarm(
             repeat: input.repeat,
             enabled: input.enabled,
         };
-        c.create_alarm(&device_id, &req).map_err(map_err)
+        c.create_alarm(&device_id, &req)
     })
     .await
-    .map_err(|e| AppError::internal(format!("create_alarm task: {e}")))?
 }
 
 #[tauri::command]
@@ -157,8 +152,7 @@ pub async fn update_alarm(
             input.hour, input.minute
         ),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
+    admin_call("update_alarm", base_url, token, move |c| {
         let req = UpsertAlarmRequest {
             hour: input.hour,
             minute: input.minute,
@@ -167,10 +161,8 @@ pub async fn update_alarm(
             enabled: input.enabled,
         };
         c.update_alarm(&device_id, alarm_id, &req)
-            .map_err(map_err)
     })
     .await
-    .map_err(|e| AppError::internal(format!("update_alarm task: {e}")))?
 }
 
 #[tauri::command]
@@ -185,12 +177,10 @@ pub async fn delete_alarm(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/alarms/{alarm_id}"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
-        c.delete_alarm(&device_id, alarm_id).map_err(map_err)
+    admin_call("delete_alarm", base_url, token, move |c| {
+        c.delete_alarm(&device_id, alarm_id)
     })
     .await
-    .map_err(|e| AppError::internal(format!("delete_alarm task: {e}")))?
 }
 
 #[tauri::command]
@@ -204,12 +194,7 @@ pub async fn clear_alarms(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/alarms (clear)"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
-        c.clear_alarms(&device_id).map_err(map_err)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("clear_alarms task: {e}")))?
+    admin_call("clear_alarms", base_url, token, move |c| c.clear_alarms(&device_id)).await
 }
 
 // ---------- Todos ----------
@@ -243,8 +228,7 @@ pub async fn create_todo(
             input.text.chars().count()
         ),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
+    admin_call("create_todo", base_url, token, move |c| {
         let req = UpsertTodoRequest {
             text: input.text,
             done: input.done,
@@ -252,10 +236,9 @@ pub async fn create_todo(
             due_date: input.due_date,
             repeat: input.repeat,
         };
-        c.create_todo(&device_id, &req).map_err(map_err)
+        c.create_todo(&device_id, &req)
     })
     .await
-    .map_err(|e| AppError::internal(format!("create_todo task: {e}")))?
 }
 
 #[tauri::command]
@@ -275,8 +258,7 @@ pub async fn update_todo(
             input.done
         ),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
+    admin_call("update_todo", base_url, token, move |c| {
         let req = UpsertTodoRequest {
             text: input.text,
             done: input.done,
@@ -284,10 +266,9 @@ pub async fn update_todo(
             due_date: input.due_date,
             repeat: input.repeat,
         };
-        c.update_todo(&device_id, todo_id, &req).map_err(map_err)
+        c.update_todo(&device_id, todo_id, &req)
     })
     .await
-    .map_err(|e| AppError::internal(format!("update_todo task: {e}")))?
 }
 
 #[tauri::command]
@@ -302,12 +283,7 @@ pub async fn delete_todo(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/todos/{todo_id}"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
-        c.delete_todo(&device_id, todo_id).map_err(map_err)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("delete_todo task: {e}")))?
+    admin_call("delete_todo", base_url, token, move |c| c.delete_todo(&device_id, todo_id)).await
 }
 
 #[tauri::command]
@@ -321,12 +297,7 @@ pub async fn clear_todos(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/todos (clear)"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
-        c.clear_todos(&device_id).map_err(map_err)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("clear_todos task: {e}")))?
+    admin_call("clear_todos", base_url, token, move |c| c.clear_todos(&device_id)).await
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -349,21 +320,15 @@ pub async fn list_content(
         "server",
         format!("→ GET {base_url}/api/devices/{device_id}/(alarms+todos+channels+inbox)"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<ContentSnapshot, AppError> {
-        let c = client(base_url, token)?;
-        let alarms = c.list_alarms(&device_id).map_err(map_err)?;
-        let todos = c.list_todos(&device_id).map_err(map_err)?;
-        let channels = c.list_channels(&device_id).map_err(map_err)?;
-        let inbox = c.list_inbox(&device_id).map_err(map_err)?;
+    admin_call("list_content", base_url, token, move |c| {
         Ok(ContentSnapshot {
-            alarms,
-            todos,
-            channels,
-            inbox,
+            alarms: c.list_alarms(&device_id)?,
+            todos: c.list_todos(&device_id)?,
+            channels: c.list_channels(&device_id)?,
+            inbox: c.list_inbox(&device_id)?,
         })
     })
     .await
-    .map_err(|e| AppError::internal(format!("list_content task: {e}")))?
 }
 
 // ---------- Channels & inbox ----------
@@ -383,12 +348,10 @@ pub async fn create_webhook_channel(
         "server",
         format!("→ POST {base_url}/api/devices/{device_id}/channels (webhook)"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<ChannelCreated, AppError> {
-        let c = client(base_url, token)?;
-        c.create_channel(&device_id, &name).map_err(map_err)
+    admin_call("create_webhook_channel", base_url, token, move |c| {
+        c.create_channel(&device_id, &name)
     })
     .await
-    .map_err(|e| AppError::internal(format!("create_webhook_channel task: {e}")))?
 }
 
 #[tauri::command]
@@ -403,12 +366,10 @@ pub async fn delete_channel(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/channels/{channel_id}"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
-        c.delete_channel(&device_id, &channel_id).map_err(map_err)
+    admin_call("delete_channel", base_url, token, move |c| {
+        c.delete_channel(&device_id, &channel_id)
     })
     .await
-    .map_err(|e| AppError::internal(format!("delete_channel task: {e}")))?
 }
 
 #[tauri::command]
@@ -423,13 +384,10 @@ pub async fn rotate_channel_token(
         "server",
         format!("→ POST {base_url}/api/devices/{device_id}/channels/{channel_id}/rotate-token"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<String, AppError> {
-        let c = client(base_url, token)?;
+    admin_call("rotate_channel_token", base_url, token, move |c| {
         c.rotate_channel_token(&device_id, &channel_id)
-            .map_err(map_err)
     })
     .await
-    .map_err(|e| AppError::internal(format!("rotate_channel_token task: {e}")))?
 }
 
 #[tauri::command]
@@ -444,12 +402,10 @@ pub async fn delete_inbox_item(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/inbox/{seq}"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
-        c.delete_inbox_item(&device_id, seq).map_err(map_err)
+    admin_call("delete_inbox_item", base_url, token, move |c| {
+        c.delete_inbox_item(&device_id, seq)
     })
     .await
-    .map_err(|e| AppError::internal(format!("delete_inbox_item task: {e}")))?
 }
 
 #[tauri::command]
@@ -463,12 +419,7 @@ pub async fn clear_inbox(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/inbox (clear read)"),
     );
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
-        let c = client(base_url, token)?;
-        c.clear_inbox(&device_id).map_err(map_err)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("clear_inbox task: {e}")))?
+    admin_call("clear_inbox", base_url, token, move |c| c.clear_inbox(&device_id)).await
 }
 
 // ---------- helpers ----------
