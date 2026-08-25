@@ -28,7 +28,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::desktop::SharedState;
 use crate::error::AppError;
 use crate::protocol::{self, Command, Reply};
-use crate::state::{ActiveLink, AppState, LinkKind, LinkState};
+use crate::state::{ActiveLink, AppState, InflightRegistration, LinkKind, LinkState};
 use crate::transport::{ble::BleLink, usb::UsbLink, Event, Transport};
 
 const DEVICE_CMD_TIMEOUT: Duration = Duration::from_secs(45);
@@ -313,10 +313,42 @@ impl RetryLink for AppStateLink<'_> {
     }
 }
 
-/// Send `command` to the device and wait up to `DEVICE_CMD_TIMEOUT` for
-/// a `Reply`. Synchronous - it blocks for up to 45s on the worker's
-/// mpsc receiver. Wrap in `spawn_blocking` at the command entry point.
+/// Send `command` to the device and wait for its `Reply`. Synchronous -
+/// blocks for up to `DEVICE_CMD_TIMEOUT`. Wrap in `spawn_blocking` at
+/// the command entry point.
+///
+/// Identical concurrent commands are coalesced (T-050): while one
+/// request is in flight, a second identical one - e.g. the Overview and
+/// Device pages both firing `get_status` right after connect_usb, during
+/// the ~25s USB boot window - shares the first request's result instead
+/// of putting a duplicate copy on the wire. The coalescing decision is
+/// logged so it can be verified on hardware.
 fn send_and_wait(state: &AppState, command: Command) -> Result<DeviceCommandResult, AppError> {
+    let key = serde_json::to_string(&command).unwrap_or_else(|_| format!("{command:?}"));
+    match state.inflight.register(&key) {
+        InflightRegistration::Joined(waiter) => {
+            state.logs.info(
+                "device",
+                format!(
+                    "duplicate startup probe coalesced: identical {key} already in flight; sharing its result"
+                ),
+            );
+            waiter.wait(Instant::now() + DEVICE_CMD_TIMEOUT)
+        }
+        InflightRegistration::Leader(guard) => {
+            let result = drive_device_command(state, command);
+            guard.finish(result.clone());
+            result
+        }
+    }
+}
+
+/// The leader path: actually queue `command` on the active transport and
+/// drive it to completion via the shared retry driver.
+fn drive_device_command(
+    state: &AppState,
+    command: Command,
+) -> Result<DeviceCommandResult, AppError> {
     let request_id = protocol::next_request_id();
 
     // Log first - the command is queued by `drive_request` below and may
