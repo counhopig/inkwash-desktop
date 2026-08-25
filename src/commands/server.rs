@@ -22,6 +22,31 @@ fn client(base_url: String, token: String) -> Result<ServerClient, AppError> {
     Ok(ServerClient::new(url, token))
 }
 
+/// Shared shape of every admin command in this module: build a
+/// [`ServerClient`] from the caller-supplied URL/token, run `f` on the
+/// blocking thread pool (`reqwest` here is blocking - see the module docs),
+/// then flatten the two error layers back into one `AppError`: a join
+/// failure (worker panicked or the runtime shut down) becomes
+/// `AppError::internal` tagged with `label`, while errors returned by `f`
+/// go through [`map_err`] exactly once.
+async fn admin_call<T, F>(
+    label: &str,
+    base_url: String,
+    token: String,
+    f: F,
+) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce(&ServerClient) -> anyhow::Result<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let c = client(base_url, token)?;
+        f(&c).map_err(map_err)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("{label} task: {e}")))?
+}
+
 // ---------- Devices ----------
 
 #[tauri::command]
@@ -33,12 +58,7 @@ pub async fn list_devices(
     state
         .logs
         .info("server", format!("→ GET {base_url}/api/devices"));
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<Device>, AppError> {
-        let c = client(base_url, token)?;
-        c.list_devices().map_err(map_err)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("list_devices task: {e}")))?
+    admin_call("list_devices", base_url, token, |c| c.list_devices()).await
 }
 
 #[tauri::command]
