@@ -88,6 +88,41 @@ pub fn decode_reply(line: &str) -> anyhow::Result<(Option<String>, Reply)> {
     Ok((id, reply))
 }
 
+/// What to do with a reply that just arrived, relative to the request
+/// currently in flight. Shared by the CLI's retry loop (`main.rs`) and the
+/// Tauri command retry loop (`commands/device.rs`) - they run over two
+/// differently-typed transports (a bare `mpsc::Receiver` vs a
+/// mutex-guarded `AppState`) so the surrounding loops can't be unified
+/// outright, but the actual "is this reply mine, and if not what do I do"
+/// decision is exactly the same logic and shouldn't be hand-written twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyDecision {
+    /// `reply_id` doesn't match ours; it belongs to some other in-flight or
+    /// stale request and must not be treated as our answer.
+    Stale,
+    /// The device was busy (a full-screen reminder was showing) and did
+    /// not execute the command; resend and keep waiting.
+    Busy,
+    /// This is the answer to our request.
+    Done,
+}
+
+/// Classifies `reply` against `request_id`. A reply with no `id` at all is
+/// accepted on trust rather than treated as stale, since firmware that
+/// predates request correlation never sends one - see `decode_reply`'s doc
+/// comment.
+pub fn classify_reply(request_id: &str, reply_id: Option<&str>, reply: &Reply) -> ReplyDecision {
+    if let Some(rid) = reply_id {
+        if rid != request_id {
+            return ReplyDecision::Stale;
+        }
+    }
+    if matches!(reply, Reply::Busy) {
+        return ReplyDecision::Busy;
+    }
+    ReplyDecision::Done
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +229,35 @@ mod tests {
             }
             _ => panic!("expected Status reply"),
         }
+    }
+
+    #[test]
+    fn classify_reply_flags_a_mismatched_id_as_stale() {
+        assert_eq!(
+            classify_reply("req-2", Some("req-1"), &Reply::Ok),
+            ReplyDecision::Stale
+        );
+    }
+
+    #[test]
+    fn classify_reply_accepts_a_missing_id_on_trust() {
+        assert_eq!(classify_reply("req-2", None, &Reply::Ok), ReplyDecision::Done);
+    }
+
+    #[test]
+    fn classify_reply_flags_busy_even_with_a_matching_id() {
+        assert_eq!(
+            classify_reply("req-2", Some("req-2"), &Reply::Busy),
+            ReplyDecision::Busy
+        );
+    }
+
+    #[test]
+    fn classify_reply_is_done_for_a_matching_non_busy_reply() {
+        assert_eq!(
+            classify_reply("req-2", Some("req-2"), &Reply::Ok),
+            ReplyDecision::Done
+        );
     }
 
     #[test]

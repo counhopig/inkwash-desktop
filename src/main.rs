@@ -99,22 +99,27 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
             .recv_timeout(std::time::Duration::from_millis(200))
         {
             Ok(UsbEvent::Reply(id, reply)) => {
-                if let Some(rid) = &id {
-                    if rid != &request_id {
-                        println!("(ignoring reply for stale request id {rid})");
+                match protocol::classify_reply(&request_id, id.as_deref(), &reply) {
+                    protocol::ReplyDecision::Stale => {
+                        println!(
+                            "(ignoring reply for stale request id {})",
+                            id.as_deref().unwrap_or("?")
+                        );
                         continue;
                     }
-                }
-                if matches!(reply, protocol::Reply::Busy) {
-                    println!("(device busy showing a reminder; retrying)");
-                    if let Err(err) = link.send(&request_id, action.command()) {
-                        eprintln!("retry send failed: {err}");
+                    protocol::ReplyDecision::Busy => {
+                        println!("(device busy showing a reminder; retrying)");
+                        if let Err(err) = link.send(&request_id, action.command()) {
+                            eprintln!("retry send failed: {err}");
+                        }
+                        next_send = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                        continue;
                     }
-                    next_send = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                    continue;
+                    protocol::ReplyDecision::Done => {
+                        println!("{reply:?}");
+                        return;
+                    }
                 }
-                println!("{reply:?}");
-                return;
             }
             Ok(UsbEvent::Log(line)) => println!("(log) {line}"),
             Ok(UsbEvent::Disconnected(reason)) => {

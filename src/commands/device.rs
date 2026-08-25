@@ -145,14 +145,14 @@ fn handle_reply(
     reply_id: Option<String>,
     reply: Reply,
 ) -> Option<DeviceCommandResult> {
-    if let Some(rid) = &reply_id {
-        if rid != request_id {
-            state.logs.info(
-                "device",
-                format!("← reply id '{rid}' does not match in-flight request '{request_id}'; ignoring"),
-            );
-            return None;
-        }
+    let decision = protocol::classify_reply(request_id, reply_id.as_deref(), &reply);
+    if decision == protocol::ReplyDecision::Stale {
+        let rid = reply_id.as_deref().unwrap_or("?");
+        state.logs.info(
+            "device",
+            format!("← reply id '{rid}' does not match in-flight request '{request_id}'; ignoring"),
+        );
+        return None;
     }
     state.logs.info(
         "device",
@@ -161,7 +161,7 @@ fn handle_reply(
             serde_json::to_string(&reply).unwrap_or_else(|_| "<unprintable>".into())
         ),
     );
-    if matches!(reply, Reply::Busy) {
+    if decision == protocol::ReplyDecision::Busy {
         resend(state, phase, request_id, command);
         return None;
     }
