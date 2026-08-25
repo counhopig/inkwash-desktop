@@ -125,111 +125,77 @@ export const useServerStore = defineStore("server", () => {
     return r;
   }
 
-  async function createAlarm(input: AlarmInput) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.createAlarm(baseUrl.value, adminToken.value, selectedDeviceId.value, input);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  // Every device-scoped write below shares the same shape: bail out if no
+  // device is selected, call the server, refresh content on success or
+  // record the error on failure. Centralising it here means a change to
+  // that shape (e.g. optimistic updates instead of a full refetch) only
+  // has to happen once.
+  function withSelectedDevice<T>(
+    action: (deviceId: string) => Promise<C.Result<T>>,
+  ): Promise<C.Result<T>> {
+    if (selectedDeviceId.value == null) {
+      return Promise.resolve({
+        ok: false,
+        error: { code: "INVALID_INPUT", message: "No device selected" },
+      });
+    }
+    return action(selectedDeviceId.value).then(async (r) => {
+      if (r.ok) await refreshContent();
+      else lastError.value = { code: r.error.code, message: r.error.message };
+      return r;
+    });
   }
 
-  async function updateAlarm(id: number, input: AlarmInput) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.updateAlarm(baseUrl.value, adminToken.value, selectedDeviceId.value, id, input);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function createAlarm(input: AlarmInput) {
+    return withSelectedDevice((deviceId) => C.createAlarm(baseUrl.value, adminToken.value, deviceId, input));
   }
 
-  async function deleteAlarm(id: number) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.deleteAlarm(baseUrl.value, adminToken.value, selectedDeviceId.value, id);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function updateAlarm(id: number, input: AlarmInput) {
+    return withSelectedDevice((deviceId) => C.updateAlarm(baseUrl.value, adminToken.value, deviceId, id, input));
   }
 
-  async function clearAlarms() {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.clearAlarms(baseUrl.value, adminToken.value, selectedDeviceId.value);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function deleteAlarm(id: number) {
+    return withSelectedDevice((deviceId) => C.deleteAlarm(baseUrl.value, adminToken.value, deviceId, id));
   }
 
-  async function createTodo(input: TodoInput) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.createTodo(baseUrl.value, adminToken.value, selectedDeviceId.value, input);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function clearAlarms() {
+    return withSelectedDevice((deviceId) => C.clearAlarms(baseUrl.value, adminToken.value, deviceId));
   }
 
-  async function updateTodo(id: number, input: TodoInput) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.updateTodo(baseUrl.value, adminToken.value, selectedDeviceId.value, id, input);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function createTodo(input: TodoInput) {
+    return withSelectedDevice((deviceId) => C.createTodo(baseUrl.value, adminToken.value, deviceId, input));
   }
 
-  async function deleteTodo(id: number) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.deleteTodo(baseUrl.value, adminToken.value, selectedDeviceId.value, id);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function updateTodo(id: number, input: TodoInput) {
+    return withSelectedDevice((deviceId) => C.updateTodo(baseUrl.value, adminToken.value, deviceId, id, input));
   }
 
-  async function clearTodos() {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.clearTodos(baseUrl.value, adminToken.value, selectedDeviceId.value);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function deleteTodo(id: number) {
+    return withSelectedDevice((deviceId) => C.deleteTodo(baseUrl.value, adminToken.value, deviceId, id));
   }
 
-  async function createWebhookChannel(name: string): Promise<
-    | { ok: true; value: ChannelCreated }
-    | { ok: false; error: { code: string; message: string } }
-  > {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.createWebhookChannel(baseUrl.value, adminToken.value, selectedDeviceId.value, name);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function clearTodos() {
+    return withSelectedDevice((deviceId) => C.clearTodos(baseUrl.value, adminToken.value, deviceId));
   }
 
-  async function deleteChannel(channelId: string) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.deleteChannel(baseUrl.value, adminToken.value, selectedDeviceId.value, channelId);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function createWebhookChannel(name: string): Promise<C.Result<ChannelCreated>> {
+    return withSelectedDevice((deviceId) => C.createWebhookChannel(baseUrl.value, adminToken.value, deviceId, name));
   }
 
-  async function rotateChannelToken(channelId: string) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.rotateChannelToken(baseUrl.value, adminToken.value, selectedDeviceId.value, channelId);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function deleteChannel(channelId: string) {
+    return withSelectedDevice((deviceId) => C.deleteChannel(baseUrl.value, adminToken.value, deviceId, channelId));
   }
 
-  async function deleteInboxItem(seq: number) {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.deleteInboxItem(baseUrl.value, adminToken.value, selectedDeviceId.value, seq);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function rotateChannelToken(channelId: string) {
+    return withSelectedDevice((deviceId) => C.rotateChannelToken(baseUrl.value, adminToken.value, deviceId, channelId));
   }
 
-  async function clearInbox() {
-    if (selectedDeviceId.value == null) return { ok: false as const, error: { code: "INVALID_INPUT", message: "No device selected" } };
-    const r = await C.clearInbox(baseUrl.value, adminToken.value, selectedDeviceId.value);
-    if (r.ok) await refreshContent();
-    else lastError.value = { code: r.error.code, message: r.error.message };
-    return r;
+  function deleteInboxItem(seq: number) {
+    return withSelectedDevice((deviceId) => C.deleteInboxItem(baseUrl.value, adminToken.value, deviceId, seq));
+  }
+
+  function clearInbox() {
+    return withSelectedDevice((deviceId) => C.clearInbox(baseUrl.value, adminToken.value, deviceId));
   }
 
   const selectedDevice = computed(() =>
