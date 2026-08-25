@@ -393,6 +393,14 @@ impl ServerClient {
     }
 }
 
+/// Live integration tests against a real `inkwash-server` instance - they
+/// are skipped by default because they hardcode a LAN address (`LIVE_URL`
+/// below) that only exists on the home network. To run them manually,
+/// have that server reachable and use:
+///
+/// ```text
+/// cargo test -- --ignored
+/// ```
 #[cfg(test)]
 mod live_server_tests {
     use super::*;
@@ -413,6 +421,7 @@ mod live_server_tests {
     }
 
     #[test]
+    #[ignore = "needs the live server on the LAN (hardcoded LIVE_URL); run manually with `cargo test -- --ignored`"]
     fn unauthenticated_list_devices_maps_to_unauthorized() {
         if !reachable() {
             eprintln!("[skip] {LIVE_URL} not reachable");
@@ -430,6 +439,7 @@ mod live_server_tests {
     }
 
     #[test]
+    #[ignore = "needs the live server on the LAN (hardcoded LIVE_URL); run manually with `cargo test -- --ignored`"]
     fn unauthenticated_register_device_maps_to_unauthorized() {
         if !reachable() {
             eprintln!("[skip] {LIVE_URL} not reachable");
