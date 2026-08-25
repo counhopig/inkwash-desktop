@@ -73,8 +73,9 @@ impl CliAction {
 }
 
 fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
+    use commands::device::{drive_request, RetryError, RetryLink, RetryNotice, Tick};
     use std::sync::mpsc::RecvTimeoutError;
-    use transport::{usb::UsbLink, Event, Transport};
+    use transport::{usb::UsbLink, Transport};
 
     let link = match UsbLink::connect(port) {
         Ok(link) => link,
@@ -83,61 +84,63 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
             std::process::exit(1);
         }
     };
-    let request_id = protocol::next_request_id();
-    if let Err(err) = link.send(&request_id, action.command()) {
-        eprintln!("send failed: {err}");
-        std::process::exit(1);
-    }
 
-    // Opening the ESP32-S3 USB Serial/JTAG port may reset the board. Boot can
-    // then spend about 25 seconds attempting Wi-Fi before the Home loop starts
-    // polling commands, so five seconds produces a misleading timeout.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds);
-    let mut next_send = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < deadline {
-        match link.recv_timeout(std::time::Duration::from_millis(200)) {
-            Ok(Event::Reply(id, reply)) => {
-                match protocol::classify_reply(&request_id, id.as_deref(), &reply) {
-                    protocol::ReplyDecision::Stale => {
-                        println!(
-                            "(ignoring reply for stale request id {})",
-                            id.as_deref().unwrap_or("?")
-                        );
-                        continue;
-                    }
-                    protocol::ReplyDecision::Busy => {
-                        println!("(device busy showing a reminder; retrying)");
-                        if let Err(err) = link.send(&request_id, action.command()) {
-                            eprintln!("retry send failed: {err}");
-                        }
-                        next_send = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                        continue;
-                    }
-                    protocol::ReplyDecision::Done => {
-                        println!("{reply:?}");
-                        return;
-                    }
-                }
-            }
-            Ok(Event::Log(line)) => println!("(log) {line}"),
-            Ok(Event::Disconnected(reason)) => {
-                eprintln!("disconnected: {reason}");
-                std::process::exit(1);
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                if std::time::Instant::now() >= next_send {
-                    if let Err(err) = link.send(&request_id, action.command()) {
-                        eprintln!("retry send failed: {err}");
-                    }
-                    next_send = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                eprintln!("worker thread gone");
-                std::process::exit(1);
+    struct CliUsbLink(UsbLink);
+
+    impl RetryLink for CliUsbLink {
+        fn send(&mut self, request_id: &str, command: &protocol::Command) -> Result<(), String> {
+            Transport::send(&self.0, request_id, command.clone()).map_err(|e| e.to_string())
+        }
+
+        fn recv(&mut self, tick: std::time::Duration) -> Tick {
+            match Transport::recv_timeout(&self.0, tick) {
+                Ok(event) => Tick::Event(event),
+                Err(RecvTimeoutError::Timeout) => Tick::Idle,
+                Err(RecvTimeoutError::Disconnected) => Tick::Lost,
             }
         }
     }
-    eprintln!("timed out waiting for a reply");
-    std::process::exit(1);
+
+    let request_id = protocol::next_request_id();
+    // Opening the ESP32-S3 USB Serial/JTAG port may reset the board. Boot
+    // can then spend about 25 seconds attempting Wi-Fi before the Home loop
+    // starts polling commands, so five seconds produces a misleading
+    // timeout - hence the generous default and the shared driver's resends.
+    let result = drive_request(
+        &mut CliUsbLink(link),
+        &request_id,
+        &action.command(),
+        std::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds),
+        std::time::Duration::from_secs(2),
+        true,
+        &mut |notice| match notice {
+            RetryNotice::DeviceLog(line) => println!("(log) {line}"),
+            RetryNotice::StaleReply(id) => {
+                println!("(ignoring reply for stale request id {id})");
+            }
+            RetryNotice::Busy => println!("(device busy showing a reminder; retrying)"),
+            RetryNotice::ResendFailed(err) => eprintln!("retry send failed: {err}"),
+            RetryNotice::IncomingReply(_) => {}
+        },
+    );
+
+    match result {
+        Ok(reply) => println!("{reply:?}"),
+        Err(RetryError::TimedOut) => {
+            eprintln!("timed out waiting for a reply");
+            std::process::exit(1);
+        }
+        Err(RetryError::Disconnected(reason)) => {
+            eprintln!("disconnected: {reason}");
+            std::process::exit(1);
+        }
+        Err(RetryError::LinkLost) => {
+            eprintln!("worker thread gone");
+            std::process::exit(1);
+        }
+        Err(RetryError::SendFailed(err)) => {
+            eprintln!("send failed: {err}");
+            std::process::exit(1);
+        }
+    }
 }

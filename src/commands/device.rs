@@ -18,6 +18,7 @@
 //! See `state::AppState` for the design rationale and `protocol` for
 //! the wire format.
 
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -96,8 +97,9 @@ fn result_from_reply(reply: Reply) -> DeviceCommandResult {
             message,
             status: None,
         },
-        // `send_and_wait` intercepts `Busy` itself (auto-retry) before this
-        // function ever sees one; this arm only exists for exhaustiveness.
+        // `drive_request` intercepts `Busy` itself (auto-retry) before
+        // this function ever sees one; this arm only exists for
+        // exhaustiveness.
         Reply::Busy => DeviceCommandResult {
             kind: "busy".into(),
             message: "Device is showing a reminder; retrying".into(),
@@ -108,7 +110,7 @@ fn result_from_reply(reply: Reply) -> DeviceCommandResult {
 
 /// Snapshot of the connection a request was started on: the transport
 /// itself (an owned `Arc`, so the wait loop can poll it without holding
-/// the `link` mutex) plus which radio it runs on. A stale phase (link
+/// the `link` mutex) plus which radio it runs on. A stale snapshot (link
 /// swapped out from under us) is detected by pointer identity and simply
 /// means "not connected" for this request.
 struct Phase {
@@ -116,62 +118,199 @@ struct Phase {
     kind: LinkKind,
 }
 
-impl Phase {
-    /// True while `link` still holds this same transport.
-    fn matches(&self, state: &AppState) -> bool {
-        let Ok(guard) = state.link.lock() else {
-            return false;
-        };
-        match &*guard {
-            LinkState::Connected(link) => Arc::ptr_eq(&link.transport(), &self.transport),
-            LinkState::Disconnected => false,
-        }
-    }
+/// How often the retry driver wakes up between events while waiting.
+const RETRY_TICK: Duration = Duration::from_millis(250);
 
-    /// Queues a resend on exactly this transport, but only while it is
-    /// still the active link; a stale phase is a no-op.
-    fn resend_on(&self, state: &AppState, request_id: &str, command: &Command) {
-        if self.matches(state) {
-            let _ = self.transport.send(request_id, command.clone());
+/// Side-channel notices emitted while driving a request, so the GUI's
+/// log store and the CLI's stdout can render the same retry decisions
+/// their own way.
+pub(crate) enum RetryNotice {
+    /// Device log noise surfaced mid-wait.
+    DeviceLog(String),
+    /// A non-stale reply arrived (already rendered as JSON).
+    IncomingReply(String),
+    /// A reply for a different request id was ignored (`"?"` when the
+    /// device sent no id at all).
+    StaleReply(String),
+    /// The device answered `busy`; the command is being resent.
+    Busy,
+    /// A resend attempt couldn't be queued on the link.
+    ResendFailed(String),
+}
+
+/// Why a driven request ended without a final reply.
+#[derive(Debug)]
+pub(crate) enum RetryError {
+    TimedOut,
+    /// The transport reported a disconnect.
+    Disconnected(String),
+    /// The link was swapped out or cleared underneath this request.
+    LinkLost,
+    /// The very first copy couldn't even be queued (worker gone).
+    SendFailed(String),
+}
+
+/// One receive tick against the active link.
+pub(crate) enum Tick {
+    Event(Event),
+    /// Nothing arrived within the tick window.
+    Idle,
+    /// The request can no longer make progress on this link.
+    Lost,
+}
+
+/// How [`drive_request`] reaches whichever link is active. Implemented
+/// twice: over the GUI's shared `AppState` link (with stale-snapshot
+/// checks under the mutex) and over the CLI's bare `UsbLink`.
+pub(crate) trait RetryLink {
+    /// Queues one copy of `command` under `request_id`.
+    fn send(&mut self, request_id: &str, command: &Command) -> Result<(), String>;
+
+    /// Waits up to `tick` for the next event from the transport.
+    fn recv(&mut self, tick: Duration) -> Tick;
+}
+
+fn resend_now(
+    link: &mut dyn RetryLink,
+    request_id: &str,
+    command: &Command,
+    retry_interval: Duration,
+    next_resend: &mut Instant,
+    notify: &mut dyn FnMut(RetryNotice),
+) {
+    if let Err(err) = link.send(request_id, command) {
+        notify(RetryNotice::ResendFailed(err));
+    }
+    *next_resend = Instant::now() + retry_interval;
+}
+
+/// Resend/timeout core of every device request, shared by the Tauri
+/// command path ([`send_and_wait`]) and the headless CLI
+/// (`main.rs::cli_usb_command`): drive `command` under one correlation
+/// id until a matching non-busy reply arrives or `deadline` expires,
+/// resending every `retry_interval` of silence. The resends exist
+/// because opening the ESP32-S3 USB Serial/JTAG port resets the chip, so
+/// early copies of a command can be lost while it boots; all protocol
+/// commands are idempotent, so a resent command is safe.
+///
+/// Reply matching follows `protocol::classify_reply`: a reply carrying a
+/// *different* id belongs to some other in-flight/stale request and is
+/// surfaced as [`RetryNotice::StaleReply`] then ignored; a reply with no
+/// id at all is accepted on trust (firmware predating correlation); a
+/// `busy` reply triggers an immediate resend of the same request.
+///
+/// `resend_while_idle` controls silence-triggered resends: true over USB
+/// (boot-reset protection), false over BLE, whose link only exists after
+/// GATT setup completed and whose commands are never lost to a boot.
+pub(crate) fn drive_request(
+    link: &mut dyn RetryLink,
+    request_id: &str,
+    command: &Command,
+    deadline: Instant,
+    retry_interval: Duration,
+    resend_while_idle: bool,
+    notify: &mut dyn FnMut(RetryNotice),
+) -> Result<Reply, RetryError> {
+    if let Err(err) = link.send(request_id, command) {
+        return Err(RetryError::SendFailed(err));
+    }
+    let mut next_resend = Instant::now() + retry_interval;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(RetryError::TimedOut);
+        }
+        match link.recv(RETRY_TICK) {
+            Tick::Lost => return Err(RetryError::LinkLost),
+            Tick::Idle => {
+                if resend_while_idle && Instant::now() >= next_resend {
+                    resend_now(link, request_id, command, retry_interval, &mut next_resend, notify);
+                }
+            }
+            Tick::Event(Event::Log(line)) => notify(RetryNotice::DeviceLog(line)),
+            Tick::Event(Event::Disconnected(reason)) => {
+                return Err(RetryError::Disconnected(reason));
+            }
+            Tick::Event(Event::Reply(reply_id, reply)) => {
+                match protocol::classify_reply(request_id, reply_id.as_deref(), &reply) {
+                    protocol::ReplyDecision::Stale => {
+                        notify(RetryNotice::StaleReply(
+                            reply_id.as_deref().unwrap_or("?").to_string(),
+                        ));
+                    }
+                    decision => {
+                        notify(RetryNotice::IncomingReply(
+                            serde_json::to_string(&reply)
+                                .unwrap_or_else(|_| "<unprintable>".into()),
+                        ));
+                        if decision == protocol::ReplyDecision::Busy {
+                            notify(RetryNotice::Busy);
+                            resend_now(
+                                link,
+                                request_id,
+                                command,
+                                retry_interval,
+                                &mut next_resend,
+                                notify,
+                            );
+                            continue;
+                        }
+                        return Ok(reply);
+                    }
+                }
+            }
         }
     }
 }
 
-/// Common handling for a reply arriving on either transport: verifies it
-/// answers `request_id` (a reply carrying a *different* id belongs to some
-/// other in-flight/stale request and is logged and ignored, never treated
-/// as our answer; a reply with no id at all is from firmware that predates
-/// this feature and is accepted on trust, matching the old behavior), then
-/// either auto-retries on `Busy` or returns the final result.
-fn handle_reply(
-    state: &AppState,
-    phase: &Phase,
-    request_id: &str,
-    command: &Command,
-    reply_id: Option<String>,
-    reply: Reply,
-) -> Option<DeviceCommandResult> {
-    let decision = protocol::classify_reply(request_id, reply_id.as_deref(), &reply);
-    if decision == protocol::ReplyDecision::Stale {
-        let rid = reply_id.as_deref().unwrap_or("?");
-        state.logs.info(
-            "device",
-            format!("← reply id '{rid}' does not match in-flight request '{request_id}'; ignoring"),
-        );
-        return None;
+/// [`RetryLink`] over the application-wide shared state: every access
+/// re-checks under the `link` mutex that this request's transport is
+/// still the active one, mirroring the stale-phase handling.
+struct AppStateLink<'a> {
+    state: &'a AppState,
+    phase: &'a Phase,
+}
+
+impl RetryLink for AppStateLink<'_> {
+    fn send(&mut self, request_id: &str, command: &Command) -> Result<(), String> {
+        let guard = self
+            .state
+            .link
+            .lock()
+            .map_err(|e| format!("link mutex poisoned: {e}"))?;
+        match &*guard {
+            LinkState::Connected(link)
+                if Arc::ptr_eq(&link.transport(), &self.phase.transport) =>
+            {
+                link.transport()
+                    .send(request_id, command.clone())
+                    .map_err(|e| e.to_string())
+            }
+            _ => Err("device link is no longer active".into()),
+        }
     }
-    state.logs.info(
-        "device",
-        format!(
-            "← {}",
-            serde_json::to_string(&reply).unwrap_or_else(|_| "<unprintable>".into())
-        ),
-    );
-    if decision == protocol::ReplyDecision::Busy {
-        phase.resend_on(state, request_id, command);
-        return None;
+
+    fn recv(&mut self, tick: Duration) -> Tick {
+        let received = {
+            let Ok(guard) = self.state.link.lock() else {
+                return Tick::Lost;
+            };
+            match &*guard {
+                LinkState::Connected(link)
+                    if Arc::ptr_eq(&link.transport(), &self.phase.transport) =>
+                {
+                    // The snapshot Arc keeps receiving events after this
+                    // lock guard drops - see state.rs invariant 1.
+                    link.transport().recv_timeout(tick)
+                }
+                _ => return Tick::Lost,
+            }
+        };
+        match received {
+            Ok(event) => Tick::Event(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => Tick::Idle,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Tick::Lost,
+        }
     }
-    Some(result_from_reply(reply))
 }
 
 /// Send `command` to the device and wait up to `DEVICE_CMD_TIMEOUT` for
@@ -179,11 +318,9 @@ fn handle_reply(
 /// mpsc receiver. Wrap in `spawn_blocking` at the command entry point.
 fn send_and_wait(state: &AppState, command: Command) -> Result<DeviceCommandResult, AppError> {
     let request_id = protocol::next_request_id();
-    let deadline = Instant::now() + DEVICE_CMD_TIMEOUT;
-    let mut next_resend = Instant::now() + RETRY_INTERVAL;
 
-    // Log first - the command is also sent via the transport below and
-    // may be resent while the device boots, so log before the first send.
+    // Log first - the command is queued by `drive_request` below and may
+    // be resent while the device boots, so log before the first send.
     state.logs.info(
         "device",
         format!(
@@ -199,69 +336,46 @@ fn send_and_wait(state: &AppState, command: Command) -> Result<DeviceCommandResu
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
         match &*guard {
             LinkState::Disconnected => return Err(AppError::device_not_connected()),
-            LinkState::Connected(link) => {
-                let transport = link.transport();
-                transport
-                    .send(&request_id, command.clone())
-                    .map_err(|e| AppError::internal(e.to_string()))?;
-                Phase {
-                    transport,
-                    kind: link.kind(),
-                }
-            }
+            LinkState::Connected(link) => Phase {
+                transport: link.transport(),
+                kind: link.kind(),
+            },
         }
     };
 
-    loop {
-        if Instant::now() >= deadline {
-            return Err(AppError::device_timeout());
+    let mut link = AppStateLink { state, phase: &phase };
+    let reply = drive_request(
+        &mut link,
+        &request_id,
+        &command,
+        Instant::now() + DEVICE_CMD_TIMEOUT,
+        RETRY_INTERVAL,
+        // Silence-triggered resends are a USB boot-reset workaround only.
+        phase.kind == LinkKind::Usb,
+        &mut |notice| match notice {
+            RetryNotice::DeviceLog(line) => state.logs.info("device-log", line),
+            RetryNotice::IncomingReply(json) => state.logs.info("device", format!("← {json}")),
+            RetryNotice::StaleReply(id) => state.logs.info(
+                "device",
+                format!(
+                    "← reply id '{id}' does not match in-flight request '{request_id}'; ignoring"
+                ),
+            ),
+            // Busy is already covered by the incoming-reply log plus the
+            // immediate resend; failed resends stay silent, like before.
+            RetryNotice::Busy | RetryNotice::ResendFailed(_) => {}
+        },
+    )
+    .map_err(|err| match err {
+        RetryError::TimedOut => AppError::device_timeout(),
+        RetryError::Disconnected(reason) => {
+            clear_link(state);
+            AppError::device_disconnected(reason)
         }
-        let tick = {
-            let guard = state
-                .link
-                .lock()
-                .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-            match &*guard {
-                LinkState::Disconnected => return Err(AppError::device_not_connected()),
-                LinkState::Connected(link)
-                    if Arc::ptr_eq(&link.transport(), &phase.transport) =>
-                {
-                    // The snapshot Arc keeps receiving events after this
-                    // lock guard is dropped - see state.rs invariant 1.
-                    link.transport().recv_timeout(Duration::from_millis(250))
-                }
-                LinkState::Connected(_) => return Err(AppError::device_not_connected()),
-            }
-        };
-
-        match tick {
-            Ok(Event::Reply(id, reply)) => {
-                if let Some(result) =
-                    handle_reply(state, &phase, &request_id, &command, id, reply)
-                {
-                    return Ok(result);
-                }
-                next_resend = Instant::now() + RETRY_INTERVAL;
-            }
-            Ok(Event::Log(line)) => {
-                state.logs.info("device-log", line);
-            }
-            Ok(Event::Disconnected(reason)) => {
-                clear_link(state);
-                return Err(AppError::device_disconnected(reason));
-            }
-            Err(_) => {
-                // Idle tick. Resend on USB only: opening that port resets
-                // the chip and early copies of a command can be lost
-                // while it boots. BLE connects only after GATT setup has
-                // completed, so its commands are never lost to a boot.
-                if phase.kind == LinkKind::Usb && Instant::now() >= next_resend {
-                    phase.resend_on(state, &request_id, &command);
-                    next_resend = Instant::now() + RETRY_INTERVAL;
-                }
-            }
-        }
-    }
+        RetryError::LinkLost => AppError::device_not_connected(),
+        RetryError::SendFailed(detail) => AppError::internal(detail),
+    })?;
+    Ok(result_from_reply(reply))
 }
 
 fn clear_link(state: &AppState) {
@@ -525,3 +639,180 @@ fn emit_sync_finished(state: &State<'_, SharedState>, action: &str, ok: bool, er
 
 #[allow(dead_code)]
 fn _unused_app_handle(_h: &AppHandle) {}
+
+#[cfg(test)]
+mod retry_driver_tests {
+    use super::*;
+    use crate::protocol::Reply;
+
+    /// Scripted link: replays queued events in order, then idles. Idle
+    /// ticks really sleep for `tick` so silence-triggered resends run on
+    /// realistic timings. Counts every send so tests can assert resend
+    /// behaviour.
+    struct MockLink {
+        /// Idle ticks replayed (instantly) before `events`.
+        idles_first: usize,
+        events: Vec<Event>,
+        sends: usize,
+        fail_sends_from: Option<usize>,
+    }
+
+    impl MockLink {
+        fn new(events: Vec<Event>) -> Self {
+            Self {
+                idles_first: 0,
+                events,
+                sends: 0,
+                fail_sends_from: None,
+            }
+        }
+    }
+
+    impl RetryLink for MockLink {
+        fn send(&mut self, _request_id: &str, _command: &Command) -> Result<(), String> {
+            if matches!(self.fail_sends_from, Some(from) if self.sends >= from) {
+                return Err("worker gone".into());
+            }
+            self.sends += 1;
+            Ok(())
+        }
+
+        fn recv(&mut self, tick: Duration) -> Tick {
+            if self.idles_first > 0 {
+                self.idles_first -= 1;
+                std::thread::sleep(tick);
+                return Tick::Idle;
+            }
+            match self.events.is_empty() {
+                true => Tick::Idle,
+                false => Tick::Event(self.events.remove(0)),
+            }
+        }
+    }
+
+    #[test]
+    fn resends_on_idle_until_reply() {
+        // Silence long enough for two retry intervals, then the answer.
+        let mut link = MockLink::new(vec![Event::Reply(Some("r1".into()), Reply::Ok)]);
+        link.idles_first = 2;
+        let reply = drive_request(
+            &mut link,
+            "r1",
+            &Command::GetStatus,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(15),
+            true,
+            &mut |_| {},
+        )
+        .expect("reply expected");
+        assert!(matches!(reply, Reply::Ok));
+        // Initial send plus at least one silence-triggered resend.
+        assert!(link.sends >= 2, "expected resends, got {}", link.sends);
+    }
+
+    #[test]
+    fn no_idle_resend_when_disabled() {
+        // BLE semantics: silence never triggers a resend.
+        let mut link = MockLink::new(vec![]);
+        let result = drive_request(
+            &mut link,
+            "r1",
+            &Command::GetStatus,
+            Instant::now() + Duration::from_millis(60),
+            Duration::from_millis(5),
+            false,
+            &mut |_| {},
+        );
+        assert!(matches!(result, Err(RetryError::TimedOut)));
+        assert_eq!(link.sends, 1);
+    }
+
+    #[test]
+    fn busy_reply_is_retried_with_same_id() {
+        let mut link = MockLink::new(vec![
+            Event::Reply(Some("r1".into()), Reply::Busy),
+            Event::Reply(Some("r1".into()), Reply::Ok),
+        ]);
+        let mut busy_seen = false;
+        let reply = drive_request(
+            &mut link,
+            "r1",
+            &Command::GetStatus,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(15),
+            false,
+            &mut |notice| {
+                if matches!(notice, RetryNotice::Busy) {
+                    busy_seen = true;
+                }
+            },
+        )
+        .expect("final reply expected");
+        assert!(matches!(reply, Reply::Ok));
+        assert!(busy_seen);
+        assert_eq!(link.sends, 2, "initial + one busy-triggered resend");
+    }
+
+    #[test]
+    fn stale_replies_are_ignored_not_answered() {
+        let mut link = MockLink::new(vec![
+            Event::Reply(Some("other-request".into()), Reply::Ok),
+            Event::Reply(None, Reply::Ok), // no id at all: accepted on trust
+        ]);
+        let mut stale = Vec::new();
+        let reply = drive_request(
+            &mut link,
+            "r1",
+            &Command::GetStatus,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(15),
+            false,
+            &mut |notice| {
+                if let RetryNotice::StaleReply(id) = notice {
+                    stale.push(id.clone());
+                }
+            },
+        )
+        .expect("final reply expected");
+        assert!(matches!(reply, Reply::Ok));
+        assert_eq!(stale, vec!["other-request".to_string()]);
+        assert_eq!(link.sends, 1, "stale replies must not trigger a resend");
+    }
+
+    #[test]
+    fn disconnect_surfaces_as_error() {
+        let mut link = MockLink::new(vec![Event::Disconnected("read failed: boom".into())]);
+        let result = drive_request(
+            &mut link,
+            "r1",
+            &Command::GetStatus,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(15),
+            false,
+            &mut |_| {},
+        );
+        assert!(matches!(
+            result,
+            Err(RetryError::Disconnected(reason)) if reason.contains("boom")
+        ));
+    }
+
+    #[test]
+    fn first_send_failure_aborts_immediately() {
+        let mut link = MockLink::new(vec![]);
+        link.fail_sends_from = Some(0);
+        let result = drive_request(
+            &mut link,
+            "r1",
+            &Command::GetStatus,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_millis(15),
+            true,
+            &mut |_| {},
+        );
+        assert!(matches!(
+            result,
+            Err(RetryError::SendFailed(reason)) if reason.contains("worker gone")
+        ));
+    }
+}
