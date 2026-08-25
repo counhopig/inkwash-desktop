@@ -101,6 +101,13 @@ pub struct ChannelCreated {
 pub struct InboxItem {
     pub id: u64,
     pub kind: String,
+    /// `"normal"` | `"high"` - the server always sends this (see
+    /// `inkwash-server/src/models.rs`'s `InboxItem`), so this has no
+    /// `#[serde(default)]` like `body`/`when`/`read` below. Previously
+    /// missing here entirely, which meant `lib/types.ts`'s `InboxItem.
+    /// priority` (a required, non-optional field) was silently `undefined`
+    /// at runtime for every item.
+    pub priority: String,
     pub title: String,
     #[serde(default)]
     pub body: String,
