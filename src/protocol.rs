@@ -63,6 +63,13 @@ pub enum Reply {
 /// echoes `id` back on the reply unchanged; older firmware without this
 /// feature just ignores the extra field.
 pub fn encode_command(cmd: &Command, id: &str) -> String {
+    // Serialization is total: `serde_json::to_value` can only fail on a
+    // `Serialize` impl that returns an error itself - either a map with
+    // non-string keys, data `#[serde(flatten)]`ed into a non-self-describing
+    // format, or hand-written `serialize_*` calls that propagate `Err`. The
+    // `Command` enum above is derived and its fields are exactly `String`,
+    // `i16`, and unit variants, so no such step exists and this cannot
+    // panic in practice.
     let mut value = serde_json::to_value(cmd).expect("Command always serializes");
     if let Some(obj) = value.as_object_mut() {
         obj.insert("id".to_string(), serde_json::Value::String(id.to_string()));
