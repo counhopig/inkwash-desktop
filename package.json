@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
+    "codegen": "cargo test --quiet export_bindings",
+    "prebuild": "npm run codegen",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
