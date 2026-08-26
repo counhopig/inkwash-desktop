@@ -142,7 +142,11 @@ mod tests {
         let obj = value.as_object().expect("expected a JSON object");
         assert_eq!(obj.len(), expected.len(), "field count mismatch in {json}");
         for (key, expected_value) in expected {
-            assert_eq!(obj.get(*key), Some(expected_value), "field '{key}' in {json}");
+            assert_eq!(
+                obj.get(*key),
+                Some(expected_value),
+                "field '{key}' in {json}"
+            );
         }
     }
 
@@ -150,17 +154,11 @@ mod tests {
     fn firmware_commands_use_expected_wire_names() {
         assert_json_object_eq(
             &encode_command(&Command::GetStatus, "1"),
-            &[
-                ("cmd", "get_status".into()),
-                ("id", "1".into()),
-            ],
+            &[("cmd", "get_status".into()), ("id", "1".into())],
         );
         assert_json_object_eq(
             &encode_command(&Command::ClearAlarms, "2"),
-            &[
-                ("cmd", "clear_alarms".into()),
-                ("id", "2".into()),
-            ],
+            &[("cmd", "clear_alarms".into()), ("id", "2".into())],
         );
         assert_json_object_eq(
             &encode_command(
@@ -186,8 +184,7 @@ mod tests {
 
     #[test]
     fn decodes_reply_id_when_present() {
-        let (id, reply) =
-            decode_reply(r#"{"status":"ok","id":"req-42"}"#).unwrap();
+        let (id, reply) = decode_reply(r#"{"status":"ok","id":"req-42"}"#).unwrap();
         assert_eq!(id.as_deref(), Some("req-42"));
         assert!(matches!(reply, Reply::Ok));
     }
@@ -248,7 +245,10 @@ mod tests {
 
     #[test]
     fn classify_reply_accepts_a_missing_id_on_trust() {
-        assert_eq!(classify_reply("req-2", None, &Reply::Ok), ReplyDecision::Done);
+        assert_eq!(
+            classify_reply("req-2", None, &Reply::Ok),
+            ReplyDecision::Done
+        );
     }
 
     #[test]

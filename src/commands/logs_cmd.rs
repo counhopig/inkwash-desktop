@@ -59,7 +59,6 @@ pub fn export_log(state: State<'_, SharedState>) -> Result<String, AppError> {
         .or_else(|_| std::env::current_dir())
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let dest = downloads.join(format!("inkwash-desktop-export-{epoch}.log"));
-    std::fs::copy(&src, &dest)
-        .map_err(|e| AppError::internal(format!("export log: {e}")))?;
+    std::fs::copy(&src, &dest).map_err(|e| AppError::internal(format!("export log: {e}")))?;
     Ok(dest.to_string_lossy().to_string())
 }

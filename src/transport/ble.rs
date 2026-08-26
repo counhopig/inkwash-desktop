@@ -173,9 +173,8 @@ impl Transport for BleLink {
 struct BleSession {
     peripheral: Peripheral,
     write_char: btleplug::api::Characteristic,
-    notifications: std::pin::Pin<
-        Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>,
-    >,
+    notifications:
+        std::pin::Pin<Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>>,
 }
 
 /// Scan, connect, subscribe, signal readiness. The pre-loop half of the
@@ -241,17 +240,14 @@ struct BleAdapter {
     rt: tokio::runtime::Runtime,
     peripheral: Peripheral,
     write_char: btleplug::api::Characteristic,
-    notifications: std::pin::Pin<
-        Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>,
-    >,
+    notifications:
+        std::pin::Pin<Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>>,
 }
 
 impl PollSource for BleAdapter {
     fn poll(&mut self) -> Result<Option<Inbound>, String> {
         let Self {
-            rt,
-            notifications,
-            ..
+            rt, notifications, ..
         } = self;
         match rt.block_on(tokio::time::timeout(POLL_INTERVAL, notifications.next())) {
             // A timeout with no notification is the normal idle tick.

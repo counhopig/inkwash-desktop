@@ -235,7 +235,11 @@ impl Drop for InflightGuard<'_> {
         drop(slot);
         self.waiter.signal.notify_all();
         // Deregister unless a newer leader already took the slot.
-        let mut current = self.registry.current.lock().expect("inflight registry poisoned");
+        let mut current = self
+            .registry
+            .current
+            .lock()
+            .expect("inflight registry poisoned");
         if matches!(&*current, Some((key, waiter)) if *key == self.key && Arc::ptr_eq(waiter, &self.waiter))
         {
             *current = None;
@@ -303,9 +307,7 @@ mod inflight_tests {
             };
             // Joiner must not hang past its deadline when the leader is
             // simply dropped without finishing.
-            std::thread::spawn(move || {
-                waiter.wait(Instant::now() + Duration::from_secs(1))
-            });
+            std::thread::spawn(move || waiter.wait(Instant::now() + Duration::from_secs(1)));
             drop(leader);
         }
         assert!(matches!(
