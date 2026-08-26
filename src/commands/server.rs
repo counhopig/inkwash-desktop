@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use ts_rs::TS;
 
 use crate::desktop::SharedState;
 use crate::error::{from_reqwest, AppError};
@@ -30,12 +31,7 @@ fn client(base_url: String, token: String) -> Result<ServerClient, AppError> {
 /// failure (worker panicked or the runtime shut down) becomes
 /// `AppError::internal` tagged with `label`, while errors returned by `f`
 /// go through [`map_err`] exactly once.
-async fn admin_call<T, F>(
-    label: &str,
-    base_url: String,
-    token: String,
-    f: F,
-) -> Result<T, AppError>
+async fn admin_call<T, F>(label: &str, base_url: String, token: String, f: F) -> Result<T, AppError>
 where
     T: Send + 'static,
     F: FnOnce(&ServerClient) -> anyhow::Result<T> + Send + 'static,
@@ -69,9 +65,10 @@ pub async fn register_device(
     name: String,
     state: State<'_, SharedState>,
 ) -> Result<Device, AppError> {
-    state
-        .logs
-        .info("server", format!("→ POST {base_url}/api/devices name={name}"));
+    state.logs.info(
+        "server",
+        format!("→ POST {base_url}/api/devices name={name}"),
+    );
     admin_call("register_device", base_url, token, move |c| {
         c.register_device(&name)
     })
@@ -85,9 +82,10 @@ pub async fn delete_device(
     device_id: String,
     state: State<'_, SharedState>,
 ) -> Result<(), AppError> {
-    state
-        .logs
-        .info("server", format!("→ DELETE {base_url}/api/devices/{device_id}"));
+    state.logs.info(
+        "server",
+        format!("→ DELETE {base_url}/api/devices/{device_id}"),
+    );
     admin_call("delete_device", base_url, token, move |c| {
         c.delete_device(&device_id)
     })
@@ -96,7 +94,8 @@ pub async fn delete_device(
 
 // ---------- Alarms ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct AlarmInput {
     pub hour: u8,
@@ -194,12 +193,16 @@ pub async fn clear_alarms(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/alarms (clear)"),
     );
-    admin_call("clear_alarms", base_url, token, move |c| c.clear_alarms(&device_id)).await
+    admin_call("clear_alarms", base_url, token, move |c| {
+        c.clear_alarms(&device_id)
+    })
+    .await
 }
 
 // ---------- Todos ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct TodoInput {
     pub text: String,
@@ -283,7 +286,10 @@ pub async fn delete_todo(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/todos/{todo_id}"),
     );
-    admin_call("delete_todo", base_url, token, move |c| c.delete_todo(&device_id, todo_id)).await
+    admin_call("delete_todo", base_url, token, move |c| {
+        c.delete_todo(&device_id, todo_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -297,10 +303,14 @@ pub async fn clear_todos(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/todos (clear)"),
     );
-    admin_call("clear_todos", base_url, token, move |c| c.clear_todos(&device_id)).await
+    admin_call("clear_todos", base_url, token, move |c| {
+        c.clear_todos(&device_id)
+    })
+    .await
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct ContentSnapshot {
     pub alarms: Vec<Alarm>,
@@ -419,7 +429,10 @@ pub async fn clear_inbox(
         "server",
         format!("→ DELETE {base_url}/api/devices/{device_id}/inbox (clear read)"),
     );
-    admin_call("clear_inbox", base_url, token, move |c| c.clear_inbox(&device_id)).await
+    admin_call("clear_inbox", base_url, token, move |c| {
+        c.clear_inbox(&device_id)
+    })
+    .await
 }
 
 // ---------- helpers ----------

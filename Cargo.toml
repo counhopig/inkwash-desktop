@@ -17,6 +17,11 @@ serialport = "4"
 tauri = { version = "2", features = [] }
 tokio = { version = "1", features = ["full"] }
 uuid = "1"
+# TypeScript bindings for the UI (src-ui/lib/generated/) are derived from the
+# wire DTOs in src/ via #[derive(TS)]; `cargo test` regenerates them (see
+# src/server.rs). serde-compat (default feature) keeps serde rename/skip
+# attributes in sync with the JSON shape.
+ts-rs = "12"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-wlan = "0.3"

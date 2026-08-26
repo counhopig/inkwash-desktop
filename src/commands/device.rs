@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use ts_rs::TS;
 
 use crate::desktop::SharedState;
 use crate::error::AppError;
@@ -38,25 +39,30 @@ const DEVICE_CMD_TIMEOUT: Duration = Duration::from_secs(45);
 // All protocol commands are idempotent, so a resent command is safe.
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct DeviceCommandResult {
     pub kind: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub status: Option<DeviceStatus>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct DeviceStatus {
     pub wifi_configured: bool,
     pub server_configured: bool,
     pub wifi_connected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub wifi_ssid: Option<String>,
     pub wifi_has_password: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub server_url: Option<String>,
     pub server_has_token: bool,
     pub timezone_offset_minutes: i16,
@@ -223,7 +229,14 @@ pub(crate) fn drive_request(
             Tick::Lost => return Err(RetryError::LinkLost),
             Tick::Idle => {
                 if resend_while_idle && Instant::now() >= next_resend {
-                    resend_now(link, request_id, command, retry_interval, &mut next_resend, notify);
+                    resend_now(
+                        link,
+                        request_id,
+                        command,
+                        retry_interval,
+                        &mut next_resend,
+                        notify,
+                    );
                 }
             }
             Tick::Event(Event::Log(line)) => notify(RetryNotice::DeviceLog(line)),
@@ -278,9 +291,7 @@ impl RetryLink for AppStateLink<'_> {
             .lock()
             .map_err(|e| format!("link mutex poisoned: {e}"))?;
         match &*guard {
-            LinkState::Connected(link)
-                if Arc::ptr_eq(&link.transport(), &self.phase.transport) =>
-            {
+            LinkState::Connected(link) if Arc::ptr_eq(&link.transport(), &self.phase.transport) => {
                 link.transport()
                     .send(request_id, command.clone())
                     .map_err(|e| e.to_string())
@@ -375,7 +386,10 @@ fn drive_device_command(
         }
     };
 
-    let mut link = AppStateLink { state, phase: &phase };
+    let mut link = AppStateLink {
+        state,
+        phase: &phase,
+    };
     let reply = drive_request(
         &mut link,
         &request_id,
@@ -424,10 +438,7 @@ pub async fn list_usb_ports() -> Result<Vec<String>, AppError> {
 }
 
 #[tauri::command]
-pub async fn connect_usb(
-    port: String,
-    state: State<'_, SharedState>,
-) -> Result<(), AppError> {
+pub async fn connect_usb(port: String, state: State<'_, SharedState>) -> Result<(), AppError> {
     let port_for_log = port.clone();
     let link = tauri::async_runtime::spawn_blocking(move || UsbLink::connect(&port))
         .await
@@ -439,10 +450,7 @@ pub async fn connect_usb(
             .link
             .lock()
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-        *g = LinkState::Connected(Box::new(ActiveLink::new(
-            LinkKind::Usb,
-            Arc::new(link),
-        )));
+        *g = LinkState::Connected(Box::new(ActiveLink::new(LinkKind::Usb, Arc::new(link))));
     }
     shared
         .logs
@@ -471,10 +479,7 @@ pub async fn connect_ble(state: State<'_, SharedState>) -> Result<(), AppError> 
             .link
             .lock()
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-        *g = LinkState::Connected(Box::new(ActiveLink::new(
-            LinkKind::Ble,
-            Arc::new(link),
-        )));
+        *g = LinkState::Connected(Box::new(ActiveLink::new(LinkKind::Ble, Arc::new(link))));
     }
     shared.logs.info("device", "BLE connected · Inkwash");
     emit_connection_changed(&shared);
@@ -508,8 +513,9 @@ pub async fn disconnect_device(state: State<'_, SharedState>) -> Result<(), AppE
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct ConnectionStateInfo {
     pub connected: bool,
     pub kind: String,
@@ -517,7 +523,9 @@ pub struct ConnectionStateInfo {
 }
 
 #[tauri::command]
-pub fn get_connection_state(state: State<'_, SharedState>) -> Result<ConnectionStateInfo, AppError> {
+pub fn get_connection_state(
+    state: State<'_, SharedState>,
+) -> Result<ConnectionStateInfo, AppError> {
     let shared = state.inner();
     let g = shared
         .link
@@ -536,11 +544,10 @@ pub async fn get_device_status(
 ) -> Result<DeviceCommandResult, AppError> {
     let shared = state.inner().clone();
     emit_sync_started(&shared, "status");
-    let res = tauri::async_runtime::spawn_blocking(move || {
-        send_and_wait(&shared, Command::GetStatus)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("status task: {e}")))?;
+    let res =
+        tauri::async_runtime::spawn_blocking(move || send_and_wait(&shared, Command::GetStatus))
+            .await
+            .map_err(|e| AppError::internal(format!("status task: {e}")))?;
     match &res {
         Ok(_) => emit_sync_finished(&state, "status", true, None),
         Err(e) => emit_sync_finished(&state, "status", false, Some(e.message.clone())),
@@ -559,9 +566,10 @@ pub async fn set_wifi(
         return Err(AppError::invalid_input("SSID", "must not be empty"));
     }
     let shared = state.inner().clone();
-    shared
-        .logs
-        .info("device", format!("set_wifi: ssid={ssid} (password redacted)"));
+    shared.logs.info(
+        "device",
+        format!("set_wifi: ssid={ssid} (password redacted)"),
+    );
     let cmd = Command::SetWifi { ssid, password };
     tauri::async_runtime::spawn_blocking(move || send_and_wait(&shared, cmd))
         .await
@@ -618,11 +626,10 @@ pub async fn set_timezone(
 pub async fn sync_now(state: State<'_, SharedState>) -> Result<DeviceCommandResult, AppError> {
     let shared = state.inner().clone();
     emit_sync_started(&shared, "sync");
-    let res = tauri::async_runtime::spawn_blocking(move || {
-        send_and_wait(&shared, Command::SyncNow)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("sync task: {e}")))?;
+    let res =
+        tauri::async_runtime::spawn_blocking(move || send_and_wait(&shared, Command::SyncNow))
+            .await
+            .map_err(|e| AppError::internal(format!("sync task: {e}")))?;
     match &res {
         Ok(_) => emit_sync_finished(&state, "sync", true, None),
         Err(e) => emit_sync_finished(&state, "sync", false, Some(e.message.clone())),
@@ -662,7 +669,12 @@ fn emit_sync_started(state: &Arc<AppState>, action: &str) {
         .emit("sync-started", serde_json::json!({ "action": action }));
 }
 
-fn emit_sync_finished(state: &State<'_, SharedState>, action: &str, ok: bool, error: Option<String>) {
+fn emit_sync_finished(
+    state: &State<'_, SharedState>,
+    action: &str,
+    ok: bool,
+    error: Option<String>,
+) {
     let _ = state.ctx.emit(
         "sync-finished",
         serde_json::json!({ "action": action, "ok": ok, "error": error }),

@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+use ts_rs::TS;
 
 const LOG_PREFIX: &str = "inkwash-desktop-";
 const LOG_SUFFIX: &str = ".log";
@@ -47,7 +48,8 @@ fn platform_log_dir() -> PathBuf {
     std::env::temp_dir().join("inkwash-desktop")
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Info,
@@ -56,9 +58,11 @@ pub enum LogLevel {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
+    #[ts(type = "number")]
     pub timestamp_ms: u64,
     pub level: LogLevel,
     pub source: String,
@@ -173,7 +177,11 @@ impl LogStore {
     /// on disk - that's the whole point of the "Clear view" button in
     /// the Logs page toolbar (see migration plan §8.2).
     pub fn clear_view(&self) {
-        self.inner.lock().expect("log mutex poisoned").entries.clear();
+        self.inner
+            .lock()
+            .expect("log mutex poisoned")
+            .entries
+            .clear();
     }
 
     pub fn path(&self) -> PathBuf {

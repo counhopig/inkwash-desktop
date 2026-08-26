@@ -9,14 +9,26 @@
 //! commands) must run these on a background thread via
 //! `tauri::async_runtime::spawn_blocking`, not directly in the command
 //! body, or the UI thread will block for the duration of the request.
+//!
+//! TypeScript bindings: every type below that reaches the UI carries
+//! `#[derive(TS)] #[ts(export, export_to = "../src-ui/lib/generated/")]`
+//! so `cargo test` regenerates one `.ts` file per type there (consumed via
+//! src-ui/lib/types.ts). These structs deliberately have no
+//! `rename_all = "camelCase"` - they deserialize the server's snake_case
+//! JSON and Tauri forwards it to the UI unchanged, so the generated types
+//! are snake_case too. u64/i64 would default to TS `bigint`; every value
+//! actually sent (rowids, unix-second timestamps) fits JS's exact-number
+//! range, so such fields are pinned to `number`.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Recurrence schedule, mirroring `inkwash-server`'s `models::Repeat`.
 /// Externally tagged: `"Daily"`, `{"Weekly": {"days": [...]}}`,
 /// `{"Monthly": {"days": [...]}}`, or `{"Once": {...}}`. Weekdays are
 /// 0=Sunday..6=Saturday; month days are 1..=31.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub enum Repeat {
     Daily,
     Weekly { days: Vec<u8> },
@@ -24,7 +36,8 @@ pub enum Repeat {
     Once { year: u16, month: u8, day: u8 },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct Alarm {
     pub id: u8,
     pub hour: u8,
@@ -34,7 +47,8 @@ pub struct Alarm {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum Importance {
     Low,
@@ -43,14 +57,16 @@ pub enum Importance {
     High,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct TodoDue {
     pub year: u16,
     pub month: u8,
     pub day: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct Todo {
     pub id: u8,
     pub text: String,
@@ -63,7 +79,8 @@ pub struct Todo {
     pub repeat: Option<Repeat>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct Device {
     /// UUID string, opaque - not a sequential number.
     pub id: String,
@@ -73,7 +90,8 @@ pub struct Device {
 
 /// External channel (webhook / CalDAV) bound to a device - mirrors
 /// `inkwash-server`'s `models::Channel`. Never contains the plaintext token.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct Channel {
     pub id: String,
     pub device_id: String,
@@ -81,15 +99,19 @@ pub struct Channel {
     pub name: String,
     pub enabled: bool,
     pub token_prefix: String,
+    #[ts(type = "number | null")]
     pub last_sync_at: Option<i64>,
     pub last_sync_error: Option<String>,
+    #[ts(type = "number")]
     pub created_at: i64,
+    #[ts(type = "number")]
     pub updated_at: i64,
 }
 
 /// Response to creating a webhook channel: the plaintext token is returned
 /// exactly once.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct ChannelCreated {
     pub channel: Channel,
     pub token: Option<String>,
@@ -97,8 +119,10 @@ pub struct ChannelCreated {
 }
 
 /// Inbox notification as seen over the admin API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct InboxItem {
+    #[ts(type = "number")]
     pub id: u64,
     pub kind: String,
     /// `"normal"` | `"high"` - the server always sends this (see
@@ -112,6 +136,7 @@ pub struct InboxItem {
     #[serde(default)]
     pub body: String,
     #[serde(default)]
+    #[ts(type = "number | null")]
     pub when: Option<i64>,
     #[serde(default)]
     pub read: bool,
@@ -331,9 +356,7 @@ impl ServerClient {
     pub fn delete_channel(&self, device_id: &str, channel_id: &str) -> anyhow::Result<()> {
         self.auth(
             self.client
-                .delete(self.url(&format!(
-                    "/api/devices/{device_id}/channels/{channel_id}"
-                ))),
+                .delete(self.url(&format!("/api/devices/{device_id}/channels/{channel_id}"))),
         )
         .send()?
         .error_for_status()?;
@@ -346,19 +369,13 @@ impl ServerClient {
         channel_id: &str,
     ) -> anyhow::Result<String> {
         let resp = self
-            .auth(
-                self.client
-                    .post(self.url(&format!(
-                        "/api/devices/{device_id}/channels/{channel_id}/rotate-token"
-                    ))),
-            )
+            .auth(self.client.post(self.url(&format!(
+                "/api/devices/{device_id}/channels/{channel_id}/rotate-token"
+            ))))
             .send()?
             .error_for_status()?;
         let v: serde_json::Value = resp.json()?;
-        Ok(v["token"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string())
+        Ok(v["token"].as_str().unwrap_or_default().to_string())
     }
 
     pub fn list_inbox(&self, device_id: &str) -> anyhow::Result<Vec<InboxItem>> {
@@ -432,8 +449,7 @@ mod live_server_tests {
         let downcasted = err.downcast::<reqwest::Error>().expect("reqwest error");
         let status = downcasted.status().expect("status code");
         assert!(
-            status == reqwest::StatusCode::UNAUTHORIZED
-                || status == reqwest::StatusCode::FORBIDDEN,
+            status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN,
             "expected 401/403, got {status}"
         );
     }
@@ -446,12 +462,13 @@ mod live_server_tests {
             return;
         }
         let c = ServerClient::new(LIVE_URL.into(), "dummy".into());
-        let err = c.register_device("inkwash-cli-test").expect_err("expected auth error");
+        let err = c
+            .register_device("inkwash-cli-test")
+            .expect_err("expected auth error");
         let downcasted = err.downcast::<reqwest::Error>().expect("reqwest error");
         let status = downcasted.status().expect("status code");
         assert!(
-            status == reqwest::StatusCode::UNAUTHORIZED
-                || status == reqwest::StatusCode::FORBIDDEN,
+            status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN,
             "expected 401/403, got {status}"
         );
     }

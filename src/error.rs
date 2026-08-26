@@ -7,13 +7,16 @@
 //! Error code conventions are documented at the call sites below.
 
 use serde::Serialize;
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 pub struct AppError {
     pub code: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub detail: Option<String>,
 }
 
@@ -61,13 +64,11 @@ impl AppError {
     }
 
     pub fn device_disconnected(reason: impl Into<String>) -> Self {
-        Self::new("DEVICE_DISCONNECTED", "Device disconnected")
-            .with_detail(reason.into())
+        Self::new("DEVICE_DISCONNECTED", "Device disconnected").with_detail(reason.into())
     }
 
     pub fn server_unreachable(detail: impl std::fmt::Display) -> Self {
-        Self::new("SERVER_UNREACHABLE", "Cannot reach the server")
-            .with_detail(detail.to_string())
+        Self::new("SERVER_UNREACHABLE", "Cannot reach the server").with_detail(detail.to_string())
     }
 
     pub fn server_unauthorized() -> Self {
@@ -78,15 +79,11 @@ impl AppError {
     }
 
     pub fn server_status(status: u16) -> Self {
-        Self::new(
-            "SERVER_ERROR",
-            format!("Server returned HTTP {status}"),
-        )
+        Self::new("SERVER_ERROR", format!("Server returned HTTP {status}"))
     }
 
     pub fn invalid_input(field: &str, detail: impl std::fmt::Display) -> Self {
-        Self::new("INVALID_INPUT", format!("Invalid {field}"))
-            .with_detail(detail.to_string())
+        Self::new("INVALID_INPUT", format!("Invalid {field}")).with_detail(detail.to_string())
     }
 
     #[allow(dead_code)]
@@ -127,9 +124,7 @@ impl From<std::sync::mpsc::RecvTimeoutError> for AppError {
 /// `SERVER_UNAUTHORIZED` rather than a generic unreachable.
 pub fn from_reqwest(err: reqwest::Error) -> AppError {
     if let Some(status) = err.status() {
-        if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::FORBIDDEN
-        {
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return AppError::server_unauthorized();
         }
         return AppError::server_status(status.as_u16());

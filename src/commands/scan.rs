@@ -15,12 +15,14 @@
 
 use serde::Serialize;
 use tauri::State;
+use ts_rs::TS;
 
 use crate::desktop::SharedState;
 use crate::error::AppError;
 
 /// One nearby access point, already filtered to the 2.4 GHz band.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../src-ui/lib/generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct WifiNetwork {
     pub ssid: String,
@@ -28,8 +30,10 @@ pub struct WifiNetwork {
     /// Signal strength as a 0-100 percentage (approximated from dBm on
     /// macOS, reported directly by nmcli / netsh elsewhere).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub signal: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub security: Option<String>,
 }
 
@@ -57,9 +61,10 @@ pub async fn scan_wifi_networks(
     let networks = tauri::async_runtime::spawn_blocking(scan_24ghz)
         .await
         .map_err(|e| AppError::internal(format!("wifi scan task: {e}")))??;
-    shared
-        .logs
-        .info("wifi", format!("scanned {} 2.4GHz network(s)", networks.len()));
+    shared.logs.info(
+        "wifi",
+        format!("scanned {} 2.4GHz network(s)", networks.len()),
+    );
     Ok(networks)
 }
 
@@ -163,10 +168,16 @@ fn parse_netsh(text: &str) -> Vec<WifiNetwork> {
                 }
             }
         }
-        let Some(net) = current.as_mut() else { continue };
+        let Some(net) = current.as_mut() else {
+            continue;
+        };
         let lower = line.to_lowercase();
         if lower.contains("channel") || lower.contains("信道") {
-            if let Some(ch) = line.rsplit(':').next().and_then(|v| v.trim().parse::<u16>().ok()) {
+            if let Some(ch) = line
+                .rsplit(':')
+                .next()
+                .and_then(|v| v.trim().parse::<u16>().ok())
+            {
                 net.channel = ch;
             }
         } else if lower.contains("signal") || lower.contains("信号") {
@@ -196,7 +207,16 @@ fn parse_netsh(text: &str) -> Vec<WifiNetwork> {
 #[cfg(target_os = "linux")]
 fn scan_24ghz() -> Result<Vec<WifiNetwork>, AppError> {
     let out = std::process::Command::new("nmcli")
-        .args(["-t", "-e", "no", "-f", "SSID,CHAN,SIGNAL,SECURITY", "dev", "wifi", "list"])
+        .args([
+            "-t",
+            "-e",
+            "no",
+            "-f",
+            "SSID,CHAN,SIGNAL,SECURITY",
+            "dev",
+            "wifi",
+            "list",
+        ])
         .output()
         .map_err(|e| AppError::internal(format!("failed to run nmcli: {e}")))?;
     if !out.status.success() {
@@ -314,7 +334,8 @@ SSID 2 : Office5G
     #[cfg(target_os = "linux")]
     #[test]
     fn parses_nmcli_output_and_filters_24ghz() {
-        let sample = "SSID:CHAN:SIGNAL:SECURITY\nMyNetwork:6:80:WPA2\nOffice5G:36:90:WPA2\nOpenNet:1:50:\n";
+        let sample =
+            "SSID:CHAN:SIGNAL:SECURITY\nMyNetwork:6:80:WPA2\nOffice5G:36:90:WPA2\nOpenNet:1:50:\n";
         let nets = parse_nmcli(sample);
         assert_eq!(nets.len(), 2);
         assert_eq!(nets[0].ssid, "MyNetwork");
