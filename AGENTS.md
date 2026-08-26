@@ -6,7 +6,7 @@ PC config tool for the Inkwash NOTE4 firmware (`../inkwash`), one of three repos
 
 - `src/` = **Rust** (Tauri commands, USB/BLE transport, server HTTP client). `src-ui/` = **Vue** (pages/components/stores/lib/styles). Frontend is NOT in `src/`.
 - Tauri commands are registered in `src/desktop.rs` (`invoke_handler`). A new command touches: the command fn, `desktop.rs`, and a typed wrapper in `src-ui/lib/commands.ts`.
-- Wire types are hand-mirrored, no codegen: Rust structs use `#[serde(rename_all = "camelCase")]`, mirrored as camelCase interfaces in `src-ui/lib/types.ts`. Keep both sides in sync manually.
+- Wire types are generated: Rust wire DTOs (`src/server.rs`, `src/commands/*.rs`, `src/error.rs`) carry ts-rs `#[derive(TS)]`, and any `cargo test` run regenerates one `.ts` file per type under `src-ui/lib/generated/` (committed; no CI drift gate). `src-ui/lib/types.ts` only re-exports them. Device-facing DTOs use `#[serde(rename_all = "camelCase")]`; the server-backed ones intentionally stay snake_case end to end (see src/server.rs module docs). u64/i64 fields are pinned to TS `number` via `#[ts(type = "number")]` - same rationale as inkwash-server's models.rs.
 - `list_content` is the single alarms+todos endpoint; `list_alarms`/`list_todos` commands were deliberately removed as dead — do not re-add.
 
 ## Commands
