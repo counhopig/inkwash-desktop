@@ -7,7 +7,6 @@ import { ref, computed } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import * as C from "../lib/commands";
 import type {
-  ConnectionKind,
   ConnectionStateInfo,
   DeviceCommandResult,
   DeviceStatus,
@@ -160,7 +159,7 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   const isConnected = computed(() => connection.value.connected);
-  const connectionKind = computed<ConnectionKind>(() => connection.value.kind);
+  const connectionKind = computed(() => connection.value.kind);
 
   return {
     connection,

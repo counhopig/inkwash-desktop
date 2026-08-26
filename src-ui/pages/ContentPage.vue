@@ -145,9 +145,9 @@ function parseDueDate(raw: string): TodoDue | null {
 }
 
 function dueText(t: Todo | null): string {
-  if (!t?.dueDate) return "";
+  if (!t?.due_date) return "";
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${t.dueDate.year}-${pad(t.dueDate.month)}-${pad(t.dueDate.day)}`;
+  return `${t.due_date.year}-${pad(t.due_date.month)}-${pad(t.due_date.day)}`;
 }
 
 function buildRepeat(kind: string, daysRaw: string): Repeat | null {
@@ -214,7 +214,7 @@ function resetTodoForm() {
 
 function startEditTodo(t: Todo) {
   editingTodoId.value = t.id;
-  newTodo.value = { text: t.text, done: t.done, importance: t.importance, dueDate: t.dueDate, repeat: t.repeat };
+  newTodo.value = { text: t.text, done: t.done, importance: t.importance, dueDate: t.due_date, repeat: t.repeat };
   newTodoDueText.value = dueText(t);
   newTodoRepeatKind.value = repeatKindOf(t.repeat);
   newTodoRepeatDays.value = repeatDaysOf(t.repeat);
@@ -250,7 +250,7 @@ async function toggleTodoDone(t: Todo) {
     text: t.text,
     done: !t.done,
     importance: t.importance,
-    dueDate: t.dueDate,
+    dueDate: t.due_date,
     repeat: t.repeat,
   });
 }
@@ -283,7 +283,7 @@ async function createChannel() {
   if (r.ok) {
     newChannelName.value = "";
     createdChannelToken.value = r.value.token
-      ? { channel: r.value.channel, token: r.value.token, url: r.value.deliveryUrl ?? "" }
+      ? { channel: r.value.channel, token: r.value.token, url: r.value.delivery_url ?? "" }
       : null;
   } else {
     channelError.value = `${r.error.code}: ${r.error.message}`;
@@ -658,7 +658,7 @@ function applyRepeatToAlarmForm(a: Alarm) {
                 </div>
                 <div class="meta">
                   <span :class="['mark', importanceClass(t.importance)]">{{ importanceLabel(t.importance) }}</span>
-                  <span v-if="t.dueDate">due {{ dueText(t) }}</span>
+                  <span v-if="t.due_date">due {{ dueText(t) }}</span>
                   <span v-if="t.repeat">· {{ repeatLabel(t.repeat) }}</span>
                   <span>· <span :class="['mark', t.done ? 'ok' : 'pending']">{{ t.done ? "done" : "pending" }}</span></span>
                 </div>
@@ -720,7 +720,7 @@ function applyRepeatToAlarmForm(a: Alarm) {
               <div class="body">
                 <div class="title">{{ c.name }}</div>
                 <div class="meta">
-                  {{ c.kind }} · token {{ c.tokenPrefix }}… ·
+                  {{ c.kind }} · token {{ c.token_prefix }}… ·
                   <span :class="['mark', c.enabled ? 'ok' : 'idle']">{{ c.enabled ? "enabled" : "disabled" }}</span>
                 </div>
               </div>
