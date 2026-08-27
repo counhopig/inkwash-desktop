@@ -1,12 +1,12 @@
 # AGENTS.md — Inkwash Desktop
 
-PC config tool for the Inkwash NOTE4 firmware (`../inkwash`), one of three repos in this workspace (`inkwash` firmware, `inkwash-server` backend, this repo). English Tauri 2 app: Rust backend + Vue 3/Pinia frontend. Device wire protocol contract lives in `../inkwash/docs/control-protocol.md`; server admin API in `../inkwash-server`.
+PC config tool for the Inkwash NOTE4 firmware (`../inkwash-firmware`), one of four repos in this workspace (`inkwash-firmware` firmware, `inkwash-server` backend, `inkwash-mcp` MCP server, this repo). English Tauri 2 app: Rust backend + Vue 3/Pinia frontend. Device wire protocol contract lives in `../inkwash-firmware/docs/control-protocol.md`; server admin API in `../inkwash-server`.
 
 ## Layout quirk
 
 - `src/` = **Rust** (Tauri commands, USB/BLE transport, server HTTP client). `src-ui/` = **Vue** (pages/components/stores/lib/styles). Frontend is NOT in `src/`.
 - Tauri commands are registered in `src/desktop.rs` (`invoke_handler`). A new command touches: the command fn, `desktop.rs`, and a typed wrapper in `src-ui/lib/commands.ts`.
-- Wire types are generated: Rust wire DTOs (`src/server.rs`, `src/commands/*.rs`, `src/error.rs`) carry ts-rs `#[derive(TS)]`, and any `cargo test` run regenerates one `.ts` file per type under `src-ui/lib/generated/` (committed; no CI drift gate). `src-ui/lib/types.ts` only re-exports them. Device-facing DTOs use `#[serde(rename_all = "camelCase")]`; the server-backed ones intentionally stay snake_case end to end (see src/server.rs module docs). u64/i64 fields are pinned to TS `number` via `#[ts(type = "number")]` - same rationale as inkwash-server's models.rs.
+- Wire types are generated: Rust wire DTOs (`src/server.rs`, `src/commands/*.rs`, `src/error.rs`) carry ts-rs `#[derive(TS)]`, and any `cargo test` run regenerates one `.ts` file per type under `src-ui/lib/generated/` (committed; CI drift gate — see Commands below). `src-ui/lib/types.ts` only re-exports them. Device-facing DTOs use `#[serde(rename_all = "camelCase")]`; the server-backed ones intentionally stay snake_case end to end (see src/server.rs module docs). u64/i64 fields are pinned to TS `number` via `#[ts(type = "number")]` - same rationale as inkwash-server's models.rs.
 - `list_content` is the single alarms+todos endpoint; `list_alarms`/`list_todos` commands were deliberately removed as dead — do not re-add.
 
 ## Commands
@@ -14,10 +14,17 @@ PC config tool for the Inkwash NOTE4 firmware (`../inkwash`), one of three repos
 ```bash
 npm run tauri dev      # dev app (vite fixed port 1420, strictPort)
 npm run build          # vue-tsc --noEmit && vite build  — the only frontend check (no test framework)
-cargo test             # Rust unit tests (protocol/error/logs)
+cargo test             # Rust unit tests (protocol/error/logs/inflight) + live-server tests (ignored)
 cargo clippy --all-targets   # lint — this repo keeps it at zero warnings
 npm run tauri build    # release bundle
 ```
+
+CI (`.github/workflows/ci.yml`) runs `cargo test` + `npm run build` on
+every push/PR — since the build's `prebuild` hook regenerates the ts-rs
+bindings, a DTO edit that forgets the committed `generated/*.ts` fails
+the CI build, so the bindings now have a drift gate. The live-server
+tests are skipped by default; run them against any reachable server with
+`INKWASH_LIVE_URL=http://<host>:8080 cargo test -- --ignored`.
 
 Verification order after changes: `cargo clippy --all-targets` → `cargo test` → `npm run build`. Commit messages: conventional, lowercase type (`feat(ui):`, `fix(device):`, `refactor!:`), English.
 

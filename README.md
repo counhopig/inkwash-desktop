@@ -76,8 +76,14 @@ npm run tauri dev   # hot-reloads Vue, rebuilds Rust on change
 
 ```bash
 npm run build   # vue-tsc --noEmit && vite build
-cargo test      # wire format, URL normalisation, secret redaction
+cargo test      # wire format, URL normalisation, secret redaction,
+                # request coalescing, and live-server integration tests
 ```
+
+`.github/workflows/ci.yml` runs `cargo test` and `npm run build` on every
+push/PR. The live-server integration tests (`cargo test -- --ignored`) are
+skipped by default; point them at any reachable server with
+`INKWASH_LIVE_URL=http://<host>:8080`.
 
 ## Release build
 
