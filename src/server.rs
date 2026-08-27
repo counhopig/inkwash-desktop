@@ -410,20 +410,23 @@ impl ServerClient {
     }
 }
 
-/// Live integration tests against a real `inkwash-server` instance - they
-/// are skipped by default because they hardcode a LAN address (`LIVE_URL`
-/// below) that only exists on the home network. To run them manually,
-/// have that server reachable and use:
+/// are skipped by default because they target a LAN address that only
+/// exists on the home network. To run them manually, have that server
+/// reachable and use:
 ///
 /// ```text
-/// cargo test -- --ignored
+/// INKWASH_LIVE_URL=http://<server>:8080 cargo test -- --ignored
 /// ```
+///
+/// `INKWASH_LIVE_URL` defaults to `http://192.168.1.10:8080` when unset.
 #[cfg(test)]
 mod live_server_tests {
     use super::*;
     use std::time::Duration;
 
-    const LIVE_URL: &str = "http://192.168.1.10:8080";
+    fn live_url() -> String {
+        std::env::var("INKWASH_LIVE_URL").unwrap_or_else(|_| "http://192.168.1.10:8080".into())
+    }
 
     fn reachable() -> bool {
         let probe = reqwest::blocking::Client::builder()
@@ -431,20 +434,20 @@ mod live_server_tests {
             .build()
             .expect("client");
         probe
-            .get(LIVE_URL)
+            .get(live_url())
             .send()
             .map(|r| r.status().is_client_error() || r.status().is_success())
             .unwrap_or(false)
     }
 
     #[test]
-    #[ignore = "needs the live server on the LAN (hardcoded LIVE_URL); run manually with `cargo test -- --ignored`"]
+    #[ignore = "needs the live server on the LAN (INKWASH_LIVE_URL, default 192.168.1.10:8080); run manually with `cargo test -- --ignored`"]
     fn unauthenticated_list_devices_maps_to_unauthorized() {
         if !reachable() {
-            eprintln!("[skip] {LIVE_URL} not reachable");
+            eprintln!("[skip] {} not reachable", live_url());
             return;
         }
-        let c = ServerClient::new(LIVE_URL.into(), "dummy".into());
+        let c = ServerClient::new(live_url(), "dummy".into());
         let err = c.list_devices().expect_err("expected auth error");
         let downcasted = err.downcast::<reqwest::Error>().expect("reqwest error");
         let status = downcasted.status().expect("status code");
@@ -455,13 +458,13 @@ mod live_server_tests {
     }
 
     #[test]
-    #[ignore = "needs the live server on the LAN (hardcoded LIVE_URL); run manually with `cargo test -- --ignored`"]
+    #[ignore = "needs the live server on the LAN (INKWASH_LIVE_URL, default 192.168.1.10:8080); run manually with `cargo test -- --ignored`"]
     fn unauthenticated_register_device_maps_to_unauthorized() {
         if !reachable() {
-            eprintln!("[skip] {LIVE_URL} not reachable");
+            eprintln!("[skip] {} not reachable", live_url());
             return;
         }
-        let c = ServerClient::new(LIVE_URL.into(), "dummy".into());
+        let c = ServerClient::new(live_url(), "dummy".into());
         let err = c
             .register_device("inkwash-cli-test")
             .expect_err("expected auth error");
