@@ -328,7 +328,7 @@ impl RetryLink for AppStateLink<'_> {
 /// blocks for up to `DEVICE_CMD_TIMEOUT`. Wrap in `spawn_blocking` at
 /// the command entry point.
 ///
-/// Identical concurrent commands are coalesced (T-050): while one
+/// Identical concurrent commands are coalesced: while one
 /// request is in flight, a second identical one - e.g. the Overview and
 /// Device pages both firing `get_status` right after connect_usb, during
 /// the ~25s USB boot window - shares the first request's result instead
