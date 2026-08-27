@@ -51,7 +51,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Inkpaper Desktop ${{ github.ref_name }}"
+          releaseName: "Inkwash Desktop ${{ github.ref_name }}"
           releaseBody: "Desktop configuration tool for the Zectrix Note 4 e-ink device."
           releaseDraft: false
           prerelease: false
