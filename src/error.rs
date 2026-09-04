@@ -59,6 +59,10 @@ impl AppError {
             .with_detail(detail.to_string())
     }
 
+    pub fn wifi_scan_failed(detail: impl std::fmt::Display) -> Self {
+        Self::new("WIFI_SCAN_FAILED", "Wi-Fi scan unavailable").with_detail(detail.to_string())
+    }
+
     pub fn device_timeout() -> Self {
         Self::new("DEVICE_TIMEOUT", "Timed out waiting for the device")
     }
@@ -150,5 +154,13 @@ mod tests {
         let err = AppError::usb_open_failed("device busy");
         assert_eq!(err.code, "USB_OPEN_FAILED");
         assert_eq!(err.detail.as_deref(), Some("device busy"));
+    }
+
+    #[test]
+    fn identifies_wifi_scan_failures() {
+        let err = AppError::wifi_scan_failed("turn on Wi-Fi and retry");
+        assert_eq!(err.code, "WIFI_SCAN_FAILED");
+        assert_eq!(err.message, "Wi-Fi scan unavailable");
+        assert_eq!(err.detail.as_deref(), Some("turn on Wi-Fi and retry"));
     }
 }

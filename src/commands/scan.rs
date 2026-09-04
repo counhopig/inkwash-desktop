@@ -4,7 +4,7 @@
 //!
 //! * macOS - CoreWLAN via `objc2-core-wlan` (`scanForNetworksWithName:`).
 //!   Requires Location Services authorization for SSID visibility (see the
-//!   `NSLocationWhenInUseUsageDescription` entry in `tauri.conf.json`).
+//!   `NSLocationWhenInUseUsageDescription` entry in `Info.plist`).
 //! * Windows - `netsh wlan show networks mode=bssid` output parsing.
 //! * Linux - `nmcli -t -e no -f SSID,CHAN,SIGNAL,SECURITY dev wifi list`
 //!   output parsing (NetworkManager).
@@ -42,6 +42,26 @@ fn is_24ghz_channel(channel: u16) -> bool {
     (1..=14).contains(&channel)
 }
 
+/// Keep one entry per SSID, preferring the strongest observed BSSID, then
+/// present the list strongest-first for the network picker.
+fn normalize_networks(mut networks: Vec<WifiNetwork>) -> Vec<WifiNetwork> {
+    networks.retain(|network| !network.ssid.trim().is_empty() && is_24ghz_channel(network.channel));
+    networks.sort_by(|a, b| {
+        a.ssid
+            .cmp(&b.ssid)
+            .then_with(|| b.signal.cmp(&a.signal))
+            .then_with(|| a.channel.cmp(&b.channel))
+    });
+    networks.dedup_by(|a, b| a.ssid == b.ssid);
+    networks.sort_by(|a, b| {
+        b.signal
+            .cmp(&a.signal)
+            .then_with(|| a.ssid.cmp(&b.ssid))
+            .then_with(|| a.channel.cmp(&b.channel))
+    });
+    networks
+}
+
 /// Maps an RSSI value in dBm to a rough 0-100 percentage. A value of 0
 /// means "no measurement" per CoreWLAN's docs and maps to `None`.
 #[cfg(target_os = "macos")]
@@ -60,7 +80,7 @@ pub async fn scan_wifi_networks(
     let shared = state.inner().clone();
     let networks = tauri::async_runtime::spawn_blocking(scan_24ghz)
         .await
-        .map_err(|e| AppError::internal(format!("wifi scan task: {e}")))??;
+        .map_err(|e| AppError::wifi_scan_failed(format!("scan worker failed: {e}")))??;
     shared.logs.info(
         "wifi",
         format!("scanned {} 2.4GHz network(s)", networks.len()),
@@ -81,23 +101,32 @@ fn scan_24ghz() -> Result<Vec<WifiNetwork>, AppError> {
     unsafe {
         let client = CWWiFiClient::sharedWiFiClient();
         let Some(interface) = client.interface() else {
-            return Err(AppError::internal(
-                "no Wi-Fi interface found - is Wi-Fi turned on?",
+            return Err(AppError::wifi_scan_failed(
+                "no Wi-Fi interface found; turn on Wi-Fi in System Settings and retry",
             ));
         };
+        if !interface.powerOn() {
+            return Err(AppError::wifi_scan_failed(
+                "Wi-Fi is turned off; turn it on in System Settings and retry",
+            ));
+        }
 
         // `include_hidden` so hidden networks still show up as candidates.
         let networks = interface
             .scanForNetworksWithName_includeHidden_error(None, true)
-            .map_err(|e| AppError::internal(format!("CoreWLAN scan failed: {e}")))?;
+            .map_err(|e| {
+                AppError::wifi_scan_failed(format!(
+                    "macOS CoreWLAN could not scan; grant Location Services access to Inkwash Desktop and retry ({e})"
+                ))
+            })?;
 
         let mut result: Vec<WifiNetwork> = Vec::new();
         for net in &networks {
             // SSID is nil when Location Services is not authorized for this
             // app - surface that as a targeted error instead of an empty list.
             let Some(ssid) = net.ssid().map(|s| s.to_string()) else {
-                return Err(AppError::internal(
-                    "Wi-Fi scan returned no SSIDs - grant Location Services access to Inkwash Desktop in System Settings, then retry",
+                return Err(AppError::wifi_scan_failed(
+                    "macOS hid Wi-Fi names; grant Location Services access to Inkwash Desktop in System Settings, then retry",
                 ));
             };
             let channel = net
@@ -114,7 +143,7 @@ fn scan_24ghz() -> Result<Vec<WifiNetwork>, AppError> {
                 security: None,
             });
         }
-        Ok(result)
+        Ok(normalize_networks(result))
     }
 }
 
@@ -126,10 +155,10 @@ fn scan_24ghz() -> Result<Vec<WifiNetwork>, AppError> {
     let out = std::process::Command::new("netsh")
         .args(["wlan", "show", "networks", "mode=bssid"])
         .output()
-        .map_err(|e| AppError::internal(format!("failed to run netsh: {e}")))?;
+        .map_err(|e| AppError::wifi_scan_failed(format!("could not run netsh: {e}")))?;
     if !out.status.success() {
-        return Err(AppError::internal(
-            "netsh wlan show networks failed - is Wi-Fi turned on?",
+        return Err(AppError::wifi_scan_failed(
+            "Windows Wi-Fi scan failed; turn on Wi-Fi and retry",
         ));
     }
     let text = if let Ok(s) = std::str::from_utf8(&out.stdout) {
@@ -138,7 +167,7 @@ fn scan_24ghz() -> Result<Vec<WifiNetwork>, AppError> {
         let (decoded, _, _) = encoding_rs::GBK.decode(&out.stdout);
         decoded.into_owned()
     };
-    Ok(parse_netsh(&text))
+    Ok(normalize_networks(parse_netsh(&text)))
 }
 
 #[cfg(target_os = "windows")]
@@ -199,7 +228,6 @@ fn parse_netsh(text: &str) -> Vec<WifiNetwork> {
             networks.push(n);
         }
     }
-    networks.sort_by_key(|n| std::cmp::Reverse(n.signal));
     networks
 }
 
@@ -218,14 +246,14 @@ fn scan_24ghz() -> Result<Vec<WifiNetwork>, AppError> {
             "list",
         ])
         .output()
-        .map_err(|e| AppError::internal(format!("failed to run nmcli: {e}")))?;
+        .map_err(|e| AppError::wifi_scan_failed(format!("could not run nmcli: {e}")))?;
     if !out.status.success() {
-        return Err(AppError::internal(
-            "nmcli failed - is NetworkManager running?",
+        return Err(AppError::wifi_scan_failed(
+            "Linux Wi-Fi scan failed; make sure NetworkManager is running and retry",
         ));
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    Ok(parse_nmcli(&text))
+    Ok(normalize_networks(parse_nmcli(&text)))
 }
 
 /// Parses `nmcli -t -e no -f SSID,CHAN,SIGNAL,SECURITY dev wifi list` output:
@@ -263,14 +291,13 @@ fn parse_nmcli(text: &str) -> Vec<WifiNetwork> {
             security,
         });
     }
-    networks.sort_by_key(|n| std::cmp::Reverse(n.signal));
     networks
 }
 
 /// No supported scanning backend on other platforms.
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn scan_24ghz() -> Result<Vec<WifiNetwork>, AppError> {
-    Err(AppError::internal(
+    Err(AppError::wifi_scan_failed(
         "Wi-Fi scanning is not supported on this platform",
     ))
 }
@@ -288,6 +315,48 @@ mod tests {
         assert!(!is_24ghz_channel(14 + 1));
         assert!(!is_24ghz_channel(36));
         assert!(!is_24ghz_channel(149));
+    }
+
+    #[test]
+    fn normalizes_to_unique_ssids_and_strongest_first() {
+        let networks = normalize_networks(vec![
+            WifiNetwork {
+                ssid: "Office".into(),
+                channel: 6,
+                signal: Some(40),
+                security: None,
+            },
+            WifiNetwork {
+                ssid: "Home".into(),
+                channel: 11,
+                signal: Some(70),
+                security: None,
+            },
+            WifiNetwork {
+                ssid: "Office".into(),
+                channel: 1,
+                signal: Some(80),
+                security: Some("WPA2".into()),
+            },
+            WifiNetwork {
+                ssid: "5GHz".into(),
+                channel: 36,
+                signal: Some(100),
+                security: None,
+            },
+            WifiNetwork {
+                ssid: "".into(),
+                channel: 6,
+                signal: Some(100),
+                security: None,
+            },
+        ]);
+
+        assert_eq!(networks.len(), 2);
+        assert_eq!(networks[0].ssid, "Office");
+        assert_eq!(networks[0].signal, Some(80));
+        assert_eq!(networks[0].security.as_deref(), Some("WPA2"));
+        assert_eq!(networks[1].ssid, "Home");
     }
 
     #[cfg(target_os = "macos")]

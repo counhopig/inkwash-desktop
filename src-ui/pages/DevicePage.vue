@@ -52,7 +52,7 @@ async function scanNetworks() {
       scannedNetworks.value = r.value;
     } else {
       scannedNetworks.value = [];
-      scanError.value = r.error.message;
+      scanError.value = r.error.detail ? `${r.error.message}: ${r.error.detail}` : r.error.message;
     }
   } finally {
     scanning.value = false;
