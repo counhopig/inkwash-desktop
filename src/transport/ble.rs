@@ -249,7 +249,7 @@ impl PollSource for BleAdapter {
         let Self {
             rt, notifications, ..
         } = self;
-        match rt.block_on(tokio::time::timeout(POLL_INTERVAL, notifications.next())) {
+        match poll_notification(rt, notifications) {
             // A timeout with no notification is the normal idle tick.
             Err(_elapsed) => Ok(None),
             Ok(None) => Err("notification stream ended".to_string()),
@@ -269,6 +269,19 @@ impl PollSource for BleAdapter {
             Err(e) => WriteOutcome::Fatal(format!("write failed: {e}")),
         }
     }
+}
+
+/// Construct the timeout future inside the worker runtime. Tokio's timer
+/// constructor looks up the current reactor immediately; constructing it as
+/// an argument to `Runtime::block_on` evaluates it on the caller thread,
+/// outside that runtime, and panics with "there is no reactor running".
+fn poll_notification(
+    rt: &tokio::runtime::Runtime,
+    notifications: &mut std::pin::Pin<
+        Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>,
+    >,
+) -> Result<Option<btleplug::api::ValueNotification>, tokio::time::error::Elapsed> {
+    rt.block_on(async { tokio::time::timeout(POLL_INTERVAL, notifications.next()).await })
 }
 
 async fn find_device(
@@ -307,4 +320,22 @@ async fn find_device_with_retries(
     Err(anyhow::anyhow!(
         "no BLE device named '{name}' found after scanning - make sure the device's BLE Pairing screen is open"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_timeout_is_created_inside_worker_runtime() {
+        let rt = tokio::runtime::Runtime::new().expect("test runtime");
+        let mut notifications: std::pin::Pin<
+            Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>,
+        > = Box::pin(futures::stream::pending());
+
+        // This must return a normal timeout from a plain OS thread. If the
+        // timeout future is constructed before block_on, Tokio panics here
+        // because no reactor is current on this thread.
+        assert!(poll_notification(&rt, &mut notifications).is_err());
+    }
 }
