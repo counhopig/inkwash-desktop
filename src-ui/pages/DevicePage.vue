@@ -93,8 +93,20 @@ const urlError = computed(() => (serverUrl.value ? validateUrl(serverUrl.value) 
 const tokenError = computed(() => validateToken(serverToken.value));
 const tzError = computed(() => validateTimezone(tzOffset.value));
 
-const connectingUsb = computed(() => device.ops.connect?.state === "running");
+const usbConnected = computed(() => device.connection.connected && device.connection.kind === "USB");
+const bleConnected = computed(() => device.connection.connected && device.connection.kind === "BLE");
+const connectingUsb = computed(() => device.ops.usbConnect?.state === "running");
+const connectingBle = computed(() => device.ops.bleConnect?.state === "running");
 const bleScanning = computed(() => device.ops.bleScan?.state === "running");
+const bleBusy = computed(() => bleScanning.value || connectingBle.value);
+const usbStatus = computed(() => connectingUsb.value ? "pending" : usbConnected.value ? "ok" : "idle");
+const usbStatusLabel = computed(() => (connectingUsb.value ? "Connecting" : usbConnected.value ? "Connected" : "Disconnected"));
+const bleStatus = computed(() => bleBusy.value ? "pending" : bleConnected.value ? "ok" : "idle");
+const bleStatusLabel = computed(() => {
+  if (bleScanning.value) return "Scanning";
+  if (connectingBle.value) return "Connecting";
+  return bleConnected.value ? "Connected" : "Disconnected";
+});
 
 onMounted(async () => {
   await device.refreshPorts();
@@ -102,19 +114,25 @@ onMounted(async () => {
 
 async function connectUsb() {
   if (!selectedPort.value) return;
-  await device.connectUsb(selectedPort.value);
+  const connected = await device.connectUsb(selectedPort.value);
+  if (!connected.ok) return;
   const r = await device.run("status", getDeviceStatus);
   if (r.ok && r.value) device.setDeviceStatusFromCommand(r.value);
 }
 
-async function disconnect() {
-  await device.disconnect();
+async function disconnectUsb() {
+  await device.disconnect("USB");
+}
+
+async function disconnectBle() {
+  await device.disconnect("BLE");
 }
 
 async function scanBle() {
   const found = await device.discoverBle();
   if (found) {
-    await device.connectBle();
+    const connected = await device.connectBle();
+    if (!connected.ok) return;
     const r = await device.run("status", getDeviceStatus);
     if (r.ok && r.value) device.setDeviceStatusFromCommand(r.value);
   }
@@ -224,10 +242,17 @@ const tzChoices = computed(() =>
                 <div class="hint">Espressif VID 0x303a ports are listed first.</div>
               </div>
               <div class="row end" style="flex: 1;">
-                <Button v-if="!device.isConnected" variant="primary" :loading="connectingUsb" :disabled="!selectedPort" @click="connectUsb">Connect USB</Button>
-                <Button v-else variant="danger" @click="disconnect">Disconnect</Button>
+                <StatusMark :status="usbStatus" :label="usbStatusLabel" />
+                <Button v-if="usbConnected" variant="danger" :loading="device.ops.usbDisconnect?.state === 'running'" @click="disconnectUsb">Disconnect USB</Button>
+                <Button v-else variant="primary" :loading="connectingUsb" :disabled="!selectedPort || device.isConnected" @click="connectUsb">Connect USB</Button>
               </div>
             </div>
+            <Notice v-if="device.ops.usbConnect?.state === 'error'" variant="error" :title="device.ops.usbConnect.errorCode ?? 'USB connection failed'">
+              {{ device.ops.usbConnect.errorMessage }}
+            </Notice>
+            <Notice v-if="device.ops.usbDisconnect?.state === 'error'" variant="error" :title="device.ops.usbDisconnect.errorCode ?? 'USB disconnect failed'">
+              {{ device.ops.usbDisconnect.errorMessage }}
+            </Notice>
 
             <div class="frame-section">
               <div class="row between">
@@ -235,10 +260,25 @@ const tzChoices = computed(() =>
                   <h3 style="margin:0; font-size: var(--t-14); font-weight: 600;">Bluetooth</h3>
                   <div class="hint">The Inkwash only advertises while its BLE Pairing screen is open.</div>
                 </div>
-                <Button :loading="bleScanning" :disabled="device.isConnected" @click="scanBle">
-                  {{ device.isConnected ? "Connected" : "Scan for Inkwash" }}
-                </Button>
+                <div class="row end">
+                  <StatusMark :status="bleStatus" :label="bleStatusLabel" />
+                  <Button v-if="bleConnected" variant="danger" :loading="device.ops.bleDisconnect?.state === 'running'" @click="disconnectBle">
+                    Disconnect BLE
+                  </Button>
+                  <Button v-else :loading="bleBusy" :disabled="device.isConnected" @click="scanBle">
+                    {{ device.isConnected ? "Unavailable while USB is active" : "Scan for Inkwash" }}
+                  </Button>
+                </div>
               </div>
+              <Notice v-if="device.ops.bleScan?.state === 'error'" variant="error" :title="device.ops.bleScan.errorCode ?? 'BLE scan failed'">
+                {{ device.ops.bleScan.errorMessage }}
+              </Notice>
+              <Notice v-if="device.ops.bleConnect?.state === 'error'" variant="error" :title="device.ops.bleConnect.errorCode ?? 'BLE connection failed'">
+                {{ device.ops.bleConnect.errorMessage }}
+              </Notice>
+              <Notice v-if="device.ops.bleDisconnect?.state === 'error'" variant="error" :title="device.ops.bleDisconnect.errorCode ?? 'BLE disconnect failed'">
+                {{ device.ops.bleDisconnect.errorMessage }}
+              </Notice>
             </div>
           </div>
         </Frame>

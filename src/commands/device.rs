@@ -415,7 +415,7 @@ fn drive_device_command(
     .map_err(|err| match err {
         RetryError::TimedOut => AppError::device_timeout(),
         RetryError::Disconnected(reason) => {
-            clear_link(state);
+            clear_link(state, &phase.transport);
             AppError::device_disconnected(reason)
         }
         RetryError::LinkLost => AppError::device_not_connected(),
@@ -424,9 +424,16 @@ fn drive_device_command(
     Ok(result_from_reply(reply))
 }
 
-fn clear_link(state: &AppState) {
+fn clear_link(state: &AppState, transport: &Arc<dyn Transport>) {
+    let mut cleared = false;
     if let Ok(mut g) = state.link.lock() {
-        *g = LinkState::Disconnected;
+        if matches!(&*g, LinkState::Connected(link) if Arc::ptr_eq(&link.transport(), transport)) {
+            *g = LinkState::Disconnected;
+            cleared = true;
+        }
+    }
+    if cleared {
+        emit_connection_changed(state);
     }
 }
 
@@ -445,12 +452,18 @@ pub async fn connect_usb(port: String, state: State<'_, SharedState>) -> Result<
         .map_err(|e| AppError::internal(format!("connect task: {e}")))?
         .map_err(|e| AppError::usb_open_failed(e.to_string()))?;
     let shared = state.inner().clone();
-    {
+    let old = {
         let mut g = shared
             .link
             .lock()
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-        *g = LinkState::Connected(Box::new(ActiveLink::new(LinkKind::Usb, Arc::new(link))));
+        std::mem::replace(
+            &mut *g,
+            LinkState::Connected(Box::new(ActiveLink::new(LinkKind::Usb, Arc::new(link)))),
+        )
+    };
+    if let LinkState::Connected(old) = old {
+        old.transport().disconnect();
     }
     shared
         .logs
@@ -474,12 +487,18 @@ pub async fn connect_ble(state: State<'_, SharedState>) -> Result<(), AppError> 
         .map_err(|e| AppError::internal(format!("BLE connect task: {e}")))?
         .map_err(|e| AppError::ble_connect_failed(e.to_string()))?;
     let shared = state.inner().clone();
-    {
+    let old = {
         let mut g = shared
             .link
             .lock()
             .map_err(|e| AppError::internal(format!("link mutex poisoned: {e}")))?;
-        *g = LinkState::Connected(Box::new(ActiveLink::new(LinkKind::Ble, Arc::new(link))));
+        std::mem::replace(
+            &mut *g,
+            LinkState::Connected(Box::new(ActiveLink::new(LinkKind::Ble, Arc::new(link)))),
+        )
+    };
+    if let LinkState::Connected(old) = old {
+        old.transport().disconnect();
     }
     shared.logs.info("device", "BLE connected · Inkwash");
     emit_connection_changed(&shared);
@@ -648,7 +667,7 @@ pub async fn clear_device_alarms(
         .map_err(|e| AppError::internal(format!("clear_alarms task: {e}")))?
 }
 
-fn emit_connection_changed(state: &Arc<AppState>) {
+fn emit_connection_changed(state: &AppState) {
     let info = {
         let g = match state.link.lock() {
             Ok(g) => g,

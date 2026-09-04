@@ -250,7 +250,45 @@ impl Drop for InflightGuard<'_> {
 #[cfg(test)]
 mod inflight_tests {
     use super::*;
+    use crate::protocol::Command;
+    use crate::transport::Event;
     use std::time::Duration;
+
+    struct NoopTransport;
+
+    impl Transport for NoopTransport {
+        fn send(&self, _id: &str, _cmd: Command) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn recv_timeout(
+            &self,
+            _timeout: Duration,
+        ) -> Result<Event, std::sync::mpsc::RecvTimeoutError> {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        }
+
+        fn disconnect(&self) {}
+    }
+
+    #[test]
+    fn active_transport_labels_identify_usb_and_ble_separately() {
+        let usb = LinkState::Connected(Box::new(ActiveLink::new(
+            LinkKind::Usb,
+            Arc::new(NoopTransport),
+        )));
+        assert!(usb.is_connected());
+        assert_eq!(usb.kind_label(), "USB");
+        assert_eq!(usb.port_label(), "USB serial");
+
+        let ble = LinkState::Connected(Box::new(ActiveLink::new(
+            LinkKind::Ble,
+            Arc::new(NoopTransport),
+        )));
+        assert!(ble.is_connected());
+        assert_eq!(ble.kind_label(), "BLE");
+        assert_eq!(ble.port_label(), "Inkwash (BLE)");
+    }
 
     #[test]
     fn identical_key_joins_and_shares_leaders_result() {

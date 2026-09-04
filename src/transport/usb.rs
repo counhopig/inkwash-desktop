@@ -96,6 +96,12 @@ impl Transport for UsbLink {
     }
 }
 
+impl Drop for UsbLink {
+    fn drop(&mut self) {
+        self.disconnect();
+    }
+}
+
 /// USB half of the worker: framed writes with the longer write timeout,
 /// plus byte-to-line reassembly for inbound traffic.
 struct UsbAdapter {

@@ -72,14 +72,14 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   async function connectUsb(port: string) {
-    ops.value.connect = { state: "running" };
+    ops.value.usbConnect = { state: "running" };
     const r = await C.connectUsb(port);
     if (r.ok) {
-      ops.value.connect = { state: "success" };
+      ops.value.usbConnect = { state: "success" };
       const cs = await C.getConnectionState();
       if (cs.ok) connection.value = cs.value;
     } else {
-      ops.value.connect = {
+      ops.value.usbConnect = {
         state: "error",
         errorCode: r.error.code,
         errorMessage: r.error.message,
@@ -88,15 +88,16 @@ export const useDeviceStore = defineStore("device", () => {
     return r;
   }
 
-  async function disconnect() {
-    ops.value.disconnect = { state: "running" };
+  async function disconnect(kind: "USB" | "BLE") {
+    const key = kind === "USB" ? "usbDisconnect" : "bleDisconnect";
+    ops.value[key] = { state: "running" };
     const r = await C.disconnectDevice();
     if (r.ok) {
-      ops.value.disconnect = { state: "success" };
+      ops.value[key] = { state: "success" };
       const cs = await C.getConnectionState();
       if (cs.ok) connection.value = cs.value;
     } else {
-      ops.value.disconnect = {
+      ops.value[key] = {
         state: "error",
         errorCode: r.error.code,
         errorMessage: r.error.message,
@@ -121,14 +122,14 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   async function connectBle() {
-    ops.value.connect = { state: "running" };
+    ops.value.bleConnect = { state: "running" };
     const r = await C.connectBle();
     if (r.ok) {
-      ops.value.connect = { state: "success" };
+      ops.value.bleConnect = { state: "success" };
       const cs = await C.getConnectionState();
       if (cs.ok) connection.value = cs.value;
     } else {
-      ops.value.connect = {
+      ops.value.bleConnect = {
         state: "error",
         errorCode: r.error.code,
         errorMessage: r.error.message,

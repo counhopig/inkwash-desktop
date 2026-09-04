@@ -169,6 +169,15 @@ impl Transport for BleLink {
     }
 }
 
+impl Drop for BleLink {
+    fn drop(&mut self) {
+        // Replacing a connected LinkState (for example when switching from
+        // USB to BLE) must stop the worker even when the explicit disconnect
+        // command was not called first.
+        self.disconnect();
+    }
+}
+
 /// Everything the polling loop needs once GATT setup has completed.
 struct BleSession {
     peripheral: Peripheral,
