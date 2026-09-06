@@ -30,7 +30,8 @@ const BAUD_RATE: u32 = 115_200;
 /// during the device's brief but interrupt-heavy Wi-Fi association window
 /// could trip it and tear down the whole connection over a transient
 /// stall, not an actual disconnect.
-const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const DEVICE_SETTLE_TIME: Duration = Duration::from_secs(3);
 
 pub struct UsbLink {
     cmd_tx: mpsc::Sender<(String, Command)>,
@@ -54,6 +55,12 @@ impl UsbLink {
             .map_err(|e| anyhow::anyhow!("failed to release DTR on {port_name}: {e}"))?;
         port.write_request_to_send(false)
             .map_err(|e| anyhow::anyhow!("failed to release RTS on {port_name}: {e}"))?;
+
+        // Opening the ESP32-S3 USB Serial/JTAG port can reset or re-enumerate
+        // the device. Give its console task time to start before the worker
+        // sends the first command; otherwise Windows may accept the handle
+        // while the device still cannot drain the USB RX endpoint.
+        thread::sleep(DEVICE_SETTLE_TIME);
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<(String, Command)>();
         let (event_tx, event_rx) = mpsc::channel::<Event>();
