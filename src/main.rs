@@ -53,6 +53,14 @@ fn main() {
         cli_usb_command(&args[2], timeout, CliAction::Sync);
         return;
     }
+    if (args.len() == 3 || args.len() == 4) && args[1] == "--rtc-sync" {
+        let timeout = args
+            .get(3)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(35);
+        cli_usb_command(&args[2], timeout, CliAction::RtcSync);
+        return;
+    }
 
     desktop::run();
 }
@@ -61,6 +69,7 @@ fn main() {
 enum CliAction {
     Status,
     Sync,
+    RtcSync,
 }
 
 impl CliAction {
@@ -68,6 +77,13 @@ impl CliAction {
         match self {
             Self::Status => protocol::Command::GetStatus,
             Self::Sync => protocol::Command::SyncNow,
+            Self::RtcSync => {
+                let epoch_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock is before Unix epoch")
+                    .as_secs();
+                protocol::Command::SetRtc { epoch_secs }
+            }
         }
     }
 }

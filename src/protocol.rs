@@ -24,6 +24,7 @@ pub enum Command {
     SetWifi { ssid: String, password: String },
     SetServer { url: String, token: String },
     SyncNow,
+    SetRtc { epoch_secs: u64 },
     GetStatus,
     ClearAlarms,
     SetTimezone { offset_minutes: i16 },
@@ -159,6 +160,14 @@ mod tests {
         assert_json_object_eq(
             &encode_command(&Command::ClearAlarms, "2"),
             &[("cmd", "clear_alarms".into()), ("id", "2".into())],
+        );
+        assert_json_object_eq(
+            &encode_command(&Command::SetRtc { epoch_secs: 1_756_000_000 }, "2b"),
+            &[
+                ("cmd", "set_rtc".into()),
+                ("epoch_secs", 1_756_000_000u64.into()),
+                ("id", "2b".into()),
+            ],
         );
         assert_json_object_eq(
             &encode_command(

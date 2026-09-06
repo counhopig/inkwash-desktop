@@ -104,6 +104,7 @@ inkwash-desktop --ble-scan                        # true/false if a Note 4 adver
 inkwash-desktop --ble-list                        # full btleplug peripheral dump
 inkwash-desktop --status /dev/cu.usbmodem1101     # USB status (default timeout 35s)
 inkwash-desktop --sync   /dev/cu.usbmodem1101     # USB sync (default timeout 45s)
+inkwash-desktop --rtc-sync /dev/cu.usbmodem1101  # set RTC from this PC's clock
 ```
 
 The ESP32-S3 USB Serial/JTAG port may reset the board on open, so
