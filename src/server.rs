@@ -20,6 +20,8 @@
 //! actually sent (rowids, unix-second timestamps) fits JS's exact-number
 //! range, so such fields are pinned to `number`.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -172,10 +174,15 @@ pub struct ServerClient {
 
 impl ServerClient {
     pub fn new(base_url: String, admin_token: String) -> Self {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(20))
+            .build()
+            .expect("valid server HTTP client configuration");
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             admin_token,
-            client: reqwest::blocking::Client::new(),
+            client,
         }
     }
 
