@@ -53,6 +53,10 @@ export function redactSecret(value: string): string {
   return `${value.slice(0, 4)}\u2026${value.slice(-4)}`;
 }
 
+export function isInsecureHttpUrl(value: string): boolean {
+  return /^http:\/\//i.test(value.trim());
+}
+
 export function formatTimeShort(ms: number): string {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, "0");
