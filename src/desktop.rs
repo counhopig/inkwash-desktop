@@ -48,6 +48,8 @@ pub fn run() {
             commands::server::rotate_channel_token,
             commands::server::delete_inbox_item,
             commands::server::clear_inbox,
+            commands::storage::load_admin_token,
+            commands::storage::save_admin_token,
             commands::logs_cmd::read_logs,
             commands::logs_cmd::clear_logs,
             commands::logs_cmd::log_file_path,

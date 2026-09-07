@@ -14,3 +14,4 @@ pub mod logs;
 pub mod logs_cmd;
 pub mod scan;
 pub mod server;
+pub mod storage;
