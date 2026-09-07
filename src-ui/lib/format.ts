@@ -48,9 +48,11 @@ export function tzLabel(name: string, offset: number): string {
 }
 
 export function redactSecret(value: string): string {
-  const len = value.length;
+  // Array.from counts Unicode code points, matching Rust's `str::chars()`.
+  const chars = Array.from(value);
+  const len = chars.length;
   if (len <= 8) return "****";
-  return `${value.slice(0, 4)}\u2026${value.slice(-4)}`;
+  return `${chars.slice(0, 4).join("")}\u2026${chars.slice(-4).join("")}`;
 }
 
 export function isInsecureHttpUrl(value: string): boolean {
