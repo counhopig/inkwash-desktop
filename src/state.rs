@@ -19,6 +19,7 @@ use tauri::AppHandle;
 use crate::commands::device::DeviceCommandResult;
 use crate::commands::logs::LogStore;
 use crate::error::AppError;
+use crate::protocol::Command;
 use crate::transport::Transport;
 
 pub struct AppState {
@@ -159,7 +160,7 @@ impl InflightWaiter {
 /// commands are coalesced: the first talks to the device, later identical
 /// ones wait for and share its result instead of sending their own copy.
 pub struct InflightRegistry {
-    current: Mutex<Option<(String, Arc<InflightWaiter>)>>,
+    current: Mutex<Option<(Command, Arc<InflightWaiter>)>>,
 }
 
 impl InflightRegistry {
@@ -174,7 +175,7 @@ impl InflightRegistry {
     /// to that request's shared result; otherwise returns
     /// [`InflightRegistration::Leader`] whose guard publishes the result
     /// and deregisters on drop.
-    pub(crate) fn register(&self, key: &str) -> InflightRegistration<'_> {
+    pub(crate) fn register(&self, key: &Command) -> InflightRegistration<'_> {
         let mut current = self.current.lock().expect("inflight registry poisoned");
         if let Some((existing, waiter)) = &*current {
             if existing == key {
@@ -185,11 +186,10 @@ impl InflightRegistry {
             result: Mutex::new(None),
             signal: Condvar::new(),
         });
-        *current = Some((key.to_string(), Arc::clone(&waiter)));
+        *current = Some((key.clone(), Arc::clone(&waiter)));
         InflightRegistration::Leader(InflightGuard {
             registry: self,
             waiter,
-            key: key.to_string(),
         })
     }
 }
@@ -205,7 +205,6 @@ pub(crate) enum InflightRegistration<'a> {
 pub(crate) struct InflightGuard<'a> {
     registry: &'a InflightRegistry,
     waiter: Arc<InflightWaiter>,
-    key: String,
 }
 
 impl InflightGuard<'_> {
@@ -240,7 +239,7 @@ impl Drop for InflightGuard<'_> {
             .current
             .lock()
             .expect("inflight registry poisoned");
-        if matches!(&*current, Some((key, waiter)) if *key == self.key && Arc::ptr_eq(waiter, &self.waiter))
+        if matches!(&*current, Some((_, waiter)) if Arc::ptr_eq(waiter, &self.waiter))
         {
             *current = None;
         }
@@ -293,11 +292,11 @@ mod inflight_tests {
     #[test]
     fn identical_key_joins_and_shares_leaders_result() {
         let registry = InflightRegistry::new();
-        let leader = match registry.register("probe") {
+        let leader = match registry.register(&Command::GetStatus) {
             InflightRegistration::Leader(guard) => guard,
             InflightRegistration::Joined(_) => panic!("first registration must lead"),
         };
-        let waiter = match registry.register("probe") {
+        let waiter = match registry.register(&Command::GetStatus) {
             InflightRegistration::Joined(waiter) => waiter,
             InflightRegistration::Leader(_) => panic!("identical key must join"),
         };
@@ -318,11 +317,11 @@ mod inflight_tests {
     #[test]
     fn joiner_times_out_when_leader_never_finishes() {
         let registry = InflightRegistry::new();
-        let _leader = match registry.register("probe") {
+        let _leader = match registry.register(&Command::GetStatus) {
             InflightRegistration::Leader(guard) => guard,
             InflightRegistration::Joined(_) => panic!("first registration must lead"),
         };
-        let waiter = match registry.register("probe") {
+        let waiter = match registry.register(&Command::GetStatus) {
             InflightRegistration::Joined(waiter) => waiter,
             InflightRegistration::Leader(_) => panic!("identical key must join"),
         };
@@ -335,11 +334,11 @@ mod inflight_tests {
     fn dropped_leader_frees_the_slot_without_finishing() {
         let registry = InflightRegistry::new();
         {
-            let leader = match registry.register("probe") {
+            let leader = match registry.register(&Command::GetStatus) {
                 InflightRegistration::Leader(guard) => guard,
                 InflightRegistration::Joined(_) => panic!("first registration must lead"),
             };
-            let waiter = match registry.register("probe") {
+            let waiter = match registry.register(&Command::GetStatus) {
                 InflightRegistration::Joined(waiter) => waiter,
                 InflightRegistration::Leader(_) => panic!("identical key must join"),
             };
@@ -349,7 +348,20 @@ mod inflight_tests {
             drop(leader);
         }
         assert!(matches!(
-            registry.register("probe"),
+            registry.register(&Command::GetStatus),
+            InflightRegistration::Leader(_)
+        ));
+    }
+
+    #[test]
+    fn different_commands_do_not_join() {
+        let registry = InflightRegistry::new();
+        let _leader = match registry.register(&Command::GetStatus) {
+            InflightRegistration::Leader(guard) => guard,
+            InflightRegistration::Joined(_) => panic!("first registration must lead"),
+        };
+        assert!(matches!(
+            registry.register(&Command::SetTimezone { offset_minutes: 0 }),
             InflightRegistration::Leader(_)
         ));
     }

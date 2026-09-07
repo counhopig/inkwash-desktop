@@ -335,13 +335,12 @@ impl RetryLink for AppStateLink<'_> {
 /// of putting a duplicate copy on the wire. The coalescing decision is
 /// logged so it can be verified on hardware.
 fn send_and_wait(state: &AppState, command: Command) -> Result<DeviceCommandResult, AppError> {
-    let key = serde_json::to_string(&command).unwrap_or_else(|_| format!("{command:?}"));
-    match state.inflight.register(&key) {
+    match state.inflight.register(&command) {
         InflightRegistration::Joined(waiter) => {
             state.logs.info(
                 "device",
                 format!(
-                    "duplicate startup probe coalesced: identical {key} already in flight; sharing its result"
+                    "duplicate startup probe coalesced: identical {command:?} already in flight; sharing its result"
                 ),
             );
             waiter.wait(Instant::now() + DEVICE_CMD_TIMEOUT)
