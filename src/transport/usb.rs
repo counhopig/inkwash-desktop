@@ -164,19 +164,12 @@ impl PollSource for UsbAdapter {
         match write_result {
             Ok(()) => WriteOutcome::Sent,
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                // The device didn't drain its input in time. Most likely
-                // it's still busy executing an earlier command -
-                // `control::dispatch` is synchronous and the firmware stops
-                // polling USB for the whole duration of a slow one like
-                // sync_now, which can run well past this write's timeout.
-                // That's not a disconnect: drop this one write attempt
-                // (nothing was sent - `write()` waits for POLLOUT before
-                // attempting any bytes, so this can't have left a partial,
-                // framing-corrupting line on the wire) and let the caller's
-                // own resend timer try again. A real disconnect still
-                // surfaces via the read side.
-                WriteOutcome::Busy(format!(
-                    "(write timed out, device likely busy; will retry: {e})"
+                // `write_all` may have sent a prefix before timing out. The
+                // device's line parser cannot distinguish that prefix from a
+                // subsequent retry, so keep the stream from being reused in
+                // an unknown framing state and require a reconnect.
+                WriteOutcome::Fatal(format!(
+                    "USB write timed out; link state is unknown, reconnect before retry: {e}"
                 ))
             }
             Err(e) => WriteOutcome::Fatal(format!("write failed: {e}")),
