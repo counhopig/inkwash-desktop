@@ -101,6 +101,9 @@ const tzError = computed(() => validateTimezone(tzOffset.value));
 
 const usbConnected = computed(() => device.connection.connected && device.connection.kind === "USB");
 const bleConnected = computed(() => device.connection.connected && device.connection.kind === "BLE");
+const bleCommandWaiting = computed(() =>
+  bleConnected.value && ["status", "wifi", "server", "timezone", "sync", "clear-alarms"].some((key) => device.ops[key]?.state === "running"),
+);
 const connectingUsb = computed(() => device.ops.usbConnect?.state === "running");
 const connectingBle = computed(() => device.ops.bleConnect?.state === "running");
 const bleScanning = computed(() => device.ops.bleScan?.state === "running");
@@ -215,6 +218,9 @@ const tzChoices = computed(() =>
 
     <Notice v-if="device.ops.sync?.state === 'error'" variant="error" :title="device.ops.sync.errorCode ?? 'Sync failed'">
       {{ device.ops.sync.errorMessage }}
+    </Notice>
+    <Notice v-if="bleCommandWaiting" variant="warn" title="Waiting for device">
+      The device is showing a reminder or menu; this operation will apply when the screen is ready.
     </Notice>
 
     <div class="tabs" role="tablist">
