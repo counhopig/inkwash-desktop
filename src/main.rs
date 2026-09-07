@@ -9,6 +9,12 @@ mod server;
 mod state;
 mod transport;
 
+// Exit codes for the headless device commands. Keep these stable for scripts
+// that need to react without parsing stderr.
+const CLI_EXIT_TIMEOUT: i32 = 2;
+const CLI_EXIT_DISCONNECTED: i32 = 3;
+const CLI_EXIT_SEND_FAILED: i32 = 4;
+
 /// `inkwash-desktop --status <serial-port> [timeout-seconds]`: headless USB status check,
 /// useful for verifying a connection without going through the GUI (e.g.
 /// scripting, or a machine with no display). Everything else launches the
@@ -72,6 +78,16 @@ enum CliAction {
     RtcSync,
 }
 
+fn retry_error_exit_code(error: &commands::device::RetryError) -> i32 {
+    match error {
+        commands::device::RetryError::TimedOut => CLI_EXIT_TIMEOUT,
+        commands::device::RetryError::Disconnected(_) | commands::device::RetryError::LinkLost => {
+            CLI_EXIT_DISCONNECTED
+        }
+        commands::device::RetryError::SendFailed(_) => CLI_EXIT_SEND_FAILED,
+    }
+}
+
 impl CliAction {
     fn command(self) -> protocol::Command {
         match self {
@@ -100,7 +116,7 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
         Ok(link) => link,
         Err(err) => {
             eprintln!("failed to open {port}: {err}");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_SEND_FAILED);
         }
     };
 
@@ -163,11 +179,11 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
             Ok(protocol::Reply::Status { .. }) => {}
             Ok(reply) => {
                 eprintln!("device readiness check returned unexpected reply: {reply:?}");
-                std::process::exit(1);
+                std::process::exit(CLI_EXIT_SEND_FAILED);
             }
             Err(err) => {
                 eprintln!("device readiness check failed: {err:?}");
-                std::process::exit(1);
+                std::process::exit(retry_error_exit_code(&err));
             }
         }
         cli_link.refresh_rtc = true;
@@ -193,19 +209,19 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
         Ok(reply) => println!("{reply:?}"),
         Err(RetryError::TimedOut) => {
             eprintln!("timed out waiting for a reply");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_TIMEOUT);
         }
         Err(RetryError::Disconnected(reason)) => {
             eprintln!("disconnected: {reason}");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_DISCONNECTED);
         }
         Err(RetryError::LinkLost) => {
             eprintln!("worker thread gone");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_DISCONNECTED);
         }
         Err(RetryError::SendFailed(err)) => {
             eprintln!("send failed: {err}");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_SEND_FAILED);
         }
     }
 }
