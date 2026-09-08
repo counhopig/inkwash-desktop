@@ -1,5 +1,7 @@
 # AGENTS.md — Inkwash Desktop
 
+Current release: v0.6.0 (2026-09-08).
+
 PC config tool for the Inkwash NOTE4 firmware (`../inkwash-firmware`), one of four repos in this workspace (`inkwash-firmware` firmware, `inkwash-server` backend, `inkwash-mcp` MCP server, this repo). English Tauri 2 app: Rust backend + Vue 3/Pinia frontend. Device wire protocol contract lives in `../inkwash-firmware/docs/control-protocol.md`; server admin API in `../inkwash-server`.
 
 ## Layout quirk

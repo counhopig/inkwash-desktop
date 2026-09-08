@@ -1,5 +1,7 @@
 # Inkwash Desktop
 
+Current release: **v0.6.0**.
+
 PC configuration tool for the **Zectrix Note 4** e-ink device and the
 [**Inkwash**](https://github.com/counhopig/inkwash-firmware) ecosystem.
 A cross-platform (Linux / macOS / Windows) native app built with:

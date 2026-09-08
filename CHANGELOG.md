@@ -5,6 +5,12 @@ All notable changes to **inkwash-desktop** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-08
+
+### Changed
+- Version aligned with the Inkwash v0.6.0 release across the desktop,
+  server, MCP, and firmware repositories.
+
 ## [0.5.0] - 2026-08-21
 
 ### Added
