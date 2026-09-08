@@ -77,9 +77,6 @@ pub(crate) enum Inbound {
 /// Result of trying to push one encoded command onto the device.
 pub(crate) enum WriteOutcome {
     Sent,
-    /// The device didn't drain its input in time and nothing was sent -
-    /// not a disconnect; the caller's own resend timer will retry.
-    Busy(String),
     /// Unrecoverable write error; the worker must shut down.
     Fatal(String),
 }
@@ -132,10 +129,6 @@ pub(crate) fn run_worker_loop(
             let payload = crate::protocol::encode_command(&cmd, &id);
             match io.write_command(&payload) {
                 WriteOutcome::Sent => {}
-                WriteOutcome::Busy(reason) => {
-                    let _ = event_tx.send(Event::Log(reason));
-                    break;
-                }
                 WriteOutcome::Fatal(reason) => {
                     let _ = event_tx.send(Event::Disconnected(reason));
                     return;

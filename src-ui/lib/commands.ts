@@ -216,6 +216,14 @@ export async function clearInbox(baseUrl: string, token: string, deviceId: strin
   return wrap(invoke<null>("clear_inbox", { baseUrl, token, deviceId }));
 }
 
+export async function loadAdminToken(): Promise<Result<string>> {
+  return wrap(invoke<string>("load_admin_token"));
+}
+
+export async function saveAdminToken(token: string): Promise<Result<null>> {
+  return wrap(invoke<null>("save_admin_token", { token }));
+}
+
 // ---------- Logs ----------
 
 export async function readLogs(): Promise<Result<LogEntry[]>> {

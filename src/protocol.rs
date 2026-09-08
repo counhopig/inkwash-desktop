@@ -18,7 +18,7 @@ pub fn next_request_id() -> String {
     format!("req-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed))
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     SetWifi { ssid: String, password: String },

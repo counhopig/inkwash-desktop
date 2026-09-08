@@ -9,6 +9,12 @@ mod server;
 mod state;
 mod transport;
 
+// Exit codes for the headless device commands. Keep these stable for scripts
+// that need to react without parsing stderr.
+const CLI_EXIT_TIMEOUT: i32 = 2;
+const CLI_EXIT_DISCONNECTED: i32 = 3;
+const CLI_EXIT_SEND_FAILED: i32 = 4;
+
 /// `inkwash-desktop --status <serial-port> [timeout-seconds]`: headless USB status check,
 /// useful for verifying a connection without going through the GUI (e.g.
 /// scripting, or a machine with no display). Everything else launches the
@@ -72,20 +78,33 @@ enum CliAction {
     RtcSync,
 }
 
+fn retry_error_exit_code(error: &commands::device::RetryError) -> i32 {
+    match error {
+        commands::device::RetryError::TimedOut => CLI_EXIT_TIMEOUT,
+        commands::device::RetryError::Disconnected(_) | commands::device::RetryError::LinkLost => {
+            CLI_EXIT_DISCONNECTED
+        }
+        commands::device::RetryError::SendFailed(_) => CLI_EXIT_SEND_FAILED,
+    }
+}
+
 impl CliAction {
     fn command(self) -> protocol::Command {
         match self {
             Self::Status => protocol::Command::GetStatus,
             Self::Sync => protocol::Command::SyncNow,
-            Self::RtcSync => {
-                let epoch_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("system clock is before Unix epoch")
-                    .as_secs();
-                protocol::Command::SetRtc { epoch_secs }
-            }
+            Self::RtcSync => protocol::Command::SetRtc {
+                epoch_secs: current_epoch_secs(),
+            },
         }
     }
+}
+
+fn current_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_secs()
 }
 
 fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
@@ -97,19 +116,32 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
         Ok(link) => link,
         Err(err) => {
             eprintln!("failed to open {port}: {err}");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_SEND_FAILED);
         }
     };
 
-    struct CliUsbLink(UsbLink);
+    struct CliUsbLink {
+        transport: UsbLink,
+        refresh_rtc: bool,
+    }
 
     impl RetryLink for CliUsbLink {
         fn send(&mut self, request_id: &str, command: &protocol::Command) -> Result<(), String> {
-            Transport::send(&self.0, request_id, command.clone()).map_err(|e| e.to_string())
+            let command = if self.refresh_rtc {
+                match command {
+                    protocol::Command::SetRtc { .. } => protocol::Command::SetRtc {
+                        epoch_secs: current_epoch_secs(),
+                    },
+                    other => other.clone(),
+                }
+            } else {
+                command.clone()
+            };
+            Transport::send(&self.transport, request_id, command).map_err(|e| e.to_string())
         }
 
         fn recv(&mut self, tick: std::time::Duration) -> Tick {
-            match Transport::recv_timeout(&self.0, tick) {
+            match Transport::recv_timeout(&self.transport, tick) {
                 Ok(event) => Tick::Event(event),
                 Err(RecvTimeoutError::Timeout) => Tick::Idle,
                 Err(RecvTimeoutError::Disconnected) => Tick::Lost,
@@ -117,46 +149,79 @@ fn cli_usb_command(port: &str, timeout_seconds: u64, action: CliAction) {
         }
     }
 
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds);
+    let mut cli_link = CliUsbLink {
+        transport: link,
+        refresh_rtc: false,
+    };
+    let mut notify = |notice| match notice {
+        RetryNotice::DeviceLog(line) => println!("(log) {line}"),
+        RetryNotice::StaleReply(id) => {
+            println!("(ignoring reply for stale request id {id})");
+        }
+        RetryNotice::Busy => println!("(device busy showing a reminder; retrying)"),
+        RetryNotice::ResendFailed(err) => eprintln!("retry send failed: {err}"),
+        RetryNotice::IncomingReply(_) => {}
+    };
+
+    if matches!(action, CliAction::RtcSync) {
+        let readiness_id = protocol::next_request_id();
+        let readiness = drive_request(
+            &mut cli_link,
+            &readiness_id,
+            &protocol::Command::GetStatus,
+            deadline,
+            std::time::Duration::from_secs(2),
+            true,
+            &mut notify,
+        );
+        match readiness {
+            Ok(protocol::Reply::Status { .. }) => {}
+            Ok(reply) => {
+                eprintln!("device readiness check returned unexpected reply: {reply:?}");
+                std::process::exit(CLI_EXIT_SEND_FAILED);
+            }
+            Err(err) => {
+                eprintln!("device readiness check failed: {err:?}");
+                std::process::exit(retry_error_exit_code(&err));
+            }
+        }
+        cli_link.refresh_rtc = true;
+    }
+
     let request_id = protocol::next_request_id();
+    let command = action.command();
     // Opening the ESP32-S3 USB Serial/JTAG port may reset the board. Boot
     // can then spend about 25 seconds attempting Wi-Fi before the Home loop
     // starts polling commands, so five seconds produces a misleading
     // timeout - hence the generous default and the shared driver's resends.
     let result = drive_request(
-        &mut CliUsbLink(link),
+        &mut cli_link,
         &request_id,
-        &action.command(),
-        std::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds),
+        &command,
+        deadline,
         std::time::Duration::from_secs(2),
         true,
-        &mut |notice| match notice {
-            RetryNotice::DeviceLog(line) => println!("(log) {line}"),
-            RetryNotice::StaleReply(id) => {
-                println!("(ignoring reply for stale request id {id})");
-            }
-            RetryNotice::Busy => println!("(device busy showing a reminder; retrying)"),
-            RetryNotice::ResendFailed(err) => eprintln!("retry send failed: {err}"),
-            RetryNotice::IncomingReply(_) => {}
-        },
+        &mut notify,
     );
 
     match result {
         Ok(reply) => println!("{reply:?}"),
         Err(RetryError::TimedOut) => {
             eprintln!("timed out waiting for a reply");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_TIMEOUT);
         }
         Err(RetryError::Disconnected(reason)) => {
             eprintln!("disconnected: {reason}");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_DISCONNECTED);
         }
         Err(RetryError::LinkLost) => {
             eprintln!("worker thread gone");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_DISCONNECTED);
         }
         Err(RetryError::SendFailed(err)) => {
             eprintln!("send failed: {err}");
-            std::process::exit(1);
+            std::process::exit(CLI_EXIT_SEND_FAILED);
         }
     }
 }

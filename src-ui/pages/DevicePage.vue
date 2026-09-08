@@ -13,6 +13,7 @@ import {
   systemTimezoneOffsetMinutes,
   formatUtcOffset,
   tzLabel,
+  isInsecureHttpUrl,
 } from "../lib/format";
 import { validatePassword, validateSsid, validateUrl, validateToken, validateTimezone } from "../lib/validation";
 import {
@@ -90,11 +91,19 @@ watch(
 const ssidError = computed(() => (ssid.value ? validateSsid(ssid.value) : null));
 const passwordError = computed(() => (password.value ? validatePassword(password.value) : null));
 const urlError = computed(() => (serverUrl.value ? validateUrl(serverUrl.value) : null));
+const urlWarning = computed(() =>
+  isInsecureHttpUrl(serverUrl.value)
+    ? "HTTP sends the device token without transport encryption. HTTPS is recommended."
+    : null,
+);
 const tokenError = computed(() => validateToken(serverToken.value));
 const tzError = computed(() => validateTimezone(tzOffset.value));
 
 const usbConnected = computed(() => device.connection.connected && device.connection.kind === "USB");
 const bleConnected = computed(() => device.connection.connected && device.connection.kind === "BLE");
+const bleCommandWaiting = computed(() =>
+  bleConnected.value && ["status", "wifi", "server", "timezone", "sync", "clear-alarms"].some((key) => device.ops[key]?.state === "running"),
+);
 const connectingUsb = computed(() => device.ops.usbConnect?.state === "running");
 const connectingBle = computed(() => device.ops.bleConnect?.state === "running");
 const bleScanning = computed(() => device.ops.bleScan?.state === "running");
@@ -209,6 +218,9 @@ const tzChoices = computed(() =>
 
     <Notice v-if="device.ops.sync?.state === 'error'" variant="error" :title="device.ops.sync.errorCode ?? 'Sync failed'">
       {{ device.ops.sync.errorMessage }}
+    </Notice>
+    <Notice v-if="bleCommandWaiting" variant="warn" title="Waiting for device">
+      The device is showing a reminder or menu; this operation will apply when the screen is ready.
     </Notice>
 
     <div class="tabs" role="tablist">
@@ -392,9 +404,12 @@ const tzChoices = computed(() =>
 
       <div class="col-6">
         <Frame title="Sync server" subtitle="Public URL + device token">
-          <Field label="Server URL" :error="urlError ?? undefined" hint="The device POSTs to this exact URL - include the /api/sync path.">
-            <input v-model="serverUrl" type="text" placeholder="http://192.168.1.10:8080/api/sync" />
+          <Field label="Server URL" :error="urlError ?? undefined" hint="The device POSTs to this exact URL - include the /api/sync path. HTTPS is recommended.">
+            <input v-model="serverUrl" type="text" placeholder="https://example.com/api/sync" />
           </Field>
+          <Notice v-if="urlWarning" variant="warn" title="HTTPS recommended">
+            {{ urlWarning }}
+          </Notice>
           <Field label="Device token" :error="tokenError ?? undefined" hint="Issued by the server when you register the device. Not the Admin Token.">
             <input v-model="serverToken" type="text" placeholder="paste device token here" />
           </Field>

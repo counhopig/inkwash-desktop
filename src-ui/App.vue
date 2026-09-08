@@ -17,7 +17,11 @@ const server = useServerStore();
 const logs = useLogsStore();
 
 onMounted(async () => {
-  await Promise.all([device.bootstrap(), server.refreshDevices(), logs.bootstrap()]);
+  const [, serverReady] = await Promise.all([
+    Promise.all([device.bootstrap(), logs.bootstrap()]),
+    server.bootstrap(),
+  ]);
+  if (serverReady) await server.refreshDevices();
 });
 </script>
 

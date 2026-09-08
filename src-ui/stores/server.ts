@@ -1,6 +1,6 @@
 // Server-side admin API state: URL + admin token, registered devices,
 // currently selected device, and the alarms/todos for that device.
-// Tokens are kept in localStorage for now (see `lib/storage.ts`).
+// The token is loaded from the system keychain during bootstrap.
 
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
@@ -26,7 +26,7 @@ import type {
 
 export const useServerStore = defineStore("server", () => {
   const baseUrl = ref(loadServerBaseUrl());
-  const adminToken = ref(loadAdminToken());
+  const adminToken = ref("");
   const connected = ref(false);
   const lastError = ref<{ code: string; message: string } | null>(null);
 
@@ -43,10 +43,34 @@ export const useServerStore = defineStore("server", () => {
     connected.value = false;
   }
 
+  let tokenSaveQueue = Promise.resolve();
+
   function setAdminToken(value: string) {
     adminToken.value = value;
-    saveAdminToken(value);
     connected.value = false;
+    tokenSaveQueue = tokenSaveQueue
+      .catch(() => undefined)
+      .then(() => saveAdminToken(value))
+      .catch((err: unknown) => {
+        lastError.value = {
+          code: "INTERNAL",
+          message: err instanceof Error ? err.message : "Failed to save admin token",
+        };
+      });
+  }
+
+  async function bootstrap(): Promise<boolean> {
+    try {
+      adminToken.value = await loadAdminToken();
+      return true;
+    } catch (err) {
+      lastError.value = {
+        code: "INTERNAL",
+        message: err instanceof Error ? err.message : "Failed to load admin token",
+      };
+      connected.value = false;
+      return false;
+    }
   }
 
   function selectDevice(id: string | null) {
@@ -223,6 +247,7 @@ export const useServerStore = defineStore("server", () => {
     todoDoneCount,
     setBaseUrl,
     setAdminToken,
+    bootstrap,
     selectDevice,
     refreshDevices,
     registerDevice,
