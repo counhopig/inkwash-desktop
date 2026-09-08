@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to build and upload
+        required: false
+        default: v0.6.0
+        type: string
 
 permissions:
   contents: write
@@ -19,8 +26,8 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
-          RELEASE_TITLE: Inkwash Desktop ${{ github.ref_name }}
+          TAG_NAME: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TITLE: Inkwash Desktop ${{ inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
           release_id="$(gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId 2>/dev/null || true)"
@@ -77,9 +84,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
-          tagName: ${{ github.ref_name }}
+          tagName: ${{ inputs.release_tag || github.ref_name }}
           tauriScript: npm run tauri
-          releaseName: "Inkwash Desktop ${{ github.ref_name }}"
+          releaseName: "Inkwash Desktop ${{ inputs.release_tag || github.ref_name }}"
           releaseBody: "Desktop configuration tool for the Zectrix Note 4 e-ink device."
           releaseDraft: false
           prerelease: false
