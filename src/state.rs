@@ -239,8 +239,7 @@ impl Drop for InflightGuard<'_> {
             .current
             .lock()
             .expect("inflight registry poisoned");
-        if matches!(&*current, Some((_, waiter)) if Arc::ptr_eq(waiter, &self.waiter))
-        {
+        if matches!(&*current, Some((_, waiter)) if Arc::ptr_eq(waiter, &self.waiter)) {
             *current = None;
         }
     }

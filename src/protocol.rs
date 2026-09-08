@@ -162,7 +162,12 @@ mod tests {
             &[("cmd", "clear_alarms".into()), ("id", "2".into())],
         );
         assert_json_object_eq(
-            &encode_command(&Command::SetRtc { epoch_secs: 1_756_000_000 }, "2b"),
+            &encode_command(
+                &Command::SetRtc {
+                    epoch_secs: 1_756_000_000,
+                },
+                "2b",
+            ),
             &[
                 ("cmd", "set_rtc".into()),
                 ("epoch_secs", 1_756_000_000u64.into()),

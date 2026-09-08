@@ -32,8 +32,8 @@ pub fn save_admin_token(token: String) -> Result<(), AppError> {
             ))),
         }
     } else {
-        entry.set_password(&token).map_err(|err| {
-            AppError::internal(format!("write admin token to keychain: {err}"))
-        })
+        entry
+            .set_password(&token)
+            .map_err(|err| AppError::internal(format!("write admin token to keychain: {err}")))
     }
 }
