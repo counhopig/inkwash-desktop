@@ -26,8 +26,9 @@ It does **not** author content on the device. Four jobs:
 - **Overview** — glanceable device + server state and setup progress.
 - **Device** — push Wi-Fi credentials, sync server URL + device token,
   and timezone to the Note 4 over USB serial or BLE; trigger a sync; check
-  status. Talks the protocol in the firmware repo's
-  [`docs/control-protocol.md`](https://github.com/counhopig/inkwash-firmware/blob/main/docs/control-protocol.md).
+  status. Talks the `inkwash-logic` control protocol
+  ([`logic/src/protocol.rs`](https://github.com/counhopig/inkwash-firmware/blob/main/logic/src/protocol.rs)),
+  mirrored by this repo's `src/protocol.rs`.
 - **Content** — register devices and manage their alarms/todos against
   `inkwash-server`'s admin API. This is where actual content gets
   authored; the device just pulls it later over Wi-Fi. Also manages

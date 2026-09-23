@@ -1,7 +1,7 @@
-//! Wire types mirroring the firmware's `control.rs`
-//! (`inkwash/docs/control-protocol.md`) - this crate sends `Command` JSON
-//! and parses `Reply` JSON, so the tag/field names must match the
-//! firmware's `Serialize`/`Deserialize` derives exactly. USB and BLE both
+//! Wire types mirroring `inkwash-logic`'s `protocol` module, the firmware's
+//! `control.rs` (`inkwash-firmware/logic/src/protocol.rs`) - this crate sends
+//! `Command` JSON and parses `Reply` JSON, so the tag/field names must match
+//! the firmware's `Serialize`/`Deserialize` derives exactly. USB and BLE both
 //! carry the same JSON payloads; only the framing differs (see
 //! `transport::usb` vs `transport::ble`).
 

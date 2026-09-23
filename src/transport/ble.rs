@@ -1,5 +1,5 @@
-//! BLE transport, matching `inkwash/docs/control-protocol.md`'s BLE
-//! framing section: commands are written to the write characteristic as
+//! BLE transport, matching the firmware's `rust-firmware/src/ble_control.rs`:
+//! commands are written to the write characteristic as
 //! plain JSON (no line framing needed - GATT writes are already
 //! message-delimited), replies arrive as notifications on the separate
 //! notify characteristic. Runs its own Tokio runtime on a dedicated
@@ -309,7 +309,7 @@ async fn find_device_with_retries(
     // A handful of short retries rather than one long wait: advertising
     // packets aren't guaranteed to be seen on the very first scan pass,
     // but this device only advertises while its BLE Pairing screen is
-    // open (see `docs/control-protocol.md`'s Lifecycle notes), so we
+    // open (the firmware only advertises while that screen is up), so we
     // don't want to hang indefinitely if the user hasn't opened it yet.
     for _ in 0..retries {
         for p in adapter.peripherals().await? {

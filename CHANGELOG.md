@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **USB protocol framing** — commands were still sent with the old
   `>>IP ` / `<<IP ` prefixes after the rebrand, so the firmware (which only
   recognises `>>IW ` / `<<IW `) ignored every USB command. The wire
-  prefixes now actually match `inkwash/docs/control-protocol.md`.
+  prefixes now actually match the firmware's control protocol.
 
 ## [0.4.0] - 2026-08-21
 

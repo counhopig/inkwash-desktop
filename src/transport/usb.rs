@@ -1,5 +1,6 @@
-//! USB serial transport, matching `inkwash/docs/control-protocol.md`'s
-//! framing: commands go out as `>>IW {json}\n`, replies come back as
+//! USB serial transport, matching the firmware's
+//! `rust-firmware/src/usb_console.rs` framing: commands go out as
+//! `>>IW {json}\n`, replies come back as
 //! `<<IW {json}\n` on the same line-oriented stream that also carries the
 //! device's ordinary `log::info!` output - any line without the `<<IW `
 //! prefix is just log noise from this reader's point of view and is
